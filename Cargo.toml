@@ -11,7 +11,7 @@ path = "src/main.rs"
 clap = { version = "4.0", features = ["derive"] }
 ropey = "1.6"
 tree-sitter = "0.26"
-tree-sitter-yang = { git = "https://github.com/trislu/tree-sitter-yang.git" }
+tree-sitter-yang = { git = "https://github.com/trislu/tree-sitter-yang.git", branch = "master" }
 intervaltree = "0.2"
 strum = { version = "0.26", features = ["derive"] }
 strum_macros = "0.26"

@@ -471,7 +471,7 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 [[package]]
 name = "tree-sitter-yang"
 version = "0.1.3"
-source = "git+https://github.com/trislu/tree-sitter-yang.git#27361d7840e22d1906709b816aaaba78d9832420"
+source = "git+https://github.com/trislu/tree-sitter-yang.git?branch=master#8f278012f4adb24b07d4d851ef8d83d1633756bc"
 dependencies = [
  "cc",
  "codegen",
