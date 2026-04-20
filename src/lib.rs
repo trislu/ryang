@@ -1,7 +1,6 @@
 use indexmap::IndexMap;
 use intervaltree::IntervalTree;
 use ropey::Rope;
-use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,8 +13,8 @@ use tree_sitter_yang::yang::token::{Token, TokenKind, tokenize};
 pub enum YangError {
     #[error("Position {0}:{1} out of range")]
     OutOfRange(usize, usize),
-    #[error("Parse error: {0}")]
-    ParseError(String),
+    #[error("Parse error: UID {0}: {1}")]
+    ParseError(u64, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -69,9 +68,8 @@ impl Yang {
     /// Returns the narrowest token that contains the given row/column position.
     pub fn search_narrowest_token(&self, row: usize, column: usize) -> Result<Token, YangError> {
         let offset = self.document.rope.line_to_byte(row) + column;
-        let mut query_iter = self.token_interval_tree.query(offset..offset + 1);
         let mut narrowest: Option<Token> = None;
-        while let Some(element) = query_iter.next() {
+        for element in self.token_interval_tree.query(offset..offset + 1) {
             if narrowest.is_none() {
                 narrowest = Some(element.value.clone());
             } else {
@@ -116,7 +114,7 @@ impl Ryang {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 /// Mutable builder used to create and compile an in-memory YANG workspace.
 pub struct RyangBuild {
     documents: IndexMap<u64, Document>,
@@ -157,9 +155,8 @@ impl RyangBuild {
     ///
     /// Returns a map of per-document parse errors keyed by `uid` when any
     /// document fails tokenization.
-    pub fn compile(&mut self) -> Result<Arc<Ryang>, HashMap<u64, YangError>> {
+    pub fn compile(&mut self) -> Result<Arc<Ryang>, YangError> {
         let mut modules: IndexMap<String, Vec<Arc<Yang>>> = IndexMap::new();
-        let mut errors = HashMap::new();
         for (uid, doc) in &self.documents {
             let mut module_kind: Option<ModuleKind> = None;
             match tokenize(&doc.rope.to_string(), |token| {
@@ -189,22 +186,14 @@ impl RyangBuild {
                             .entry(yang.module_name().to_string())
                             .or_default()
                             .push(Arc::new(yang));
-                    } else {
                     }
                 }
                 Err(error) => {
-                    errors.insert(
-                        uid.clone(),
-                        YangError::ParseError(format!("UID {}: {:?}", uid, error)),
-                    );
+                    return Err(YangError::ParseError(*uid, format!("{:?}", error)));
                 }
             }
         }
-        if errors.is_empty() {
-            Ok(Arc::new(Ryang { modules }))
-        } else {
-            Err(errors)
-        }
+        Ok(Arc::new(Ryang { modules }))
     }
 }
 
@@ -337,9 +326,10 @@ mod tests {
         let result = rb.update(uid, "module updated {}");
         assert_eq!(result, Some(true));
         assert!(rb.documents.contains_key(&uid)); // Old document should be replaced
-        rb.documents.get(&uid).map(|doc| {
+        //rb.documents.get(&uid).map(|doc| {
+        if let Some(doc) = rb.documents.get(&uid) {
             assert_eq!(doc.rope.to_string(), "module updated {}");
-        });
+        }
     }
 
     #[test]
