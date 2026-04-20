@@ -290,7 +290,6 @@ dependencies = [
  "strum_macros 0.26.4",
  "thiserror",
  "tokio",
- "tree-sitter",
  "tree-sitter-yang",
 ]
 
