@@ -1,0 +1,21 @@
+[package]
+name = "ryang"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ryang"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+ropey = "1.6"
+tree-sitter = "0.26"
+tree-sitter-yang = { git = "https://github.com/trislu/tree-sitter-yang.git" }
+intervaltree = "0.2"
+strum = { version = "0.26", features = ["derive"] }
+strum_macros = "0.26"
+thiserror = "1.0"
+anyhow = "1.0"
+indexmap = "2.0"
+tokio = { version = "1.0", features = ["sync"] }
