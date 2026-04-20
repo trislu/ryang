@@ -29,11 +29,15 @@ pub struct Yang {
     document: Document,
     module_kind: ModuleKind,
     token_interval_tree: IntervalTree<usize, Token>,
-    statement_dict: IndexMap<StatementKind, Vec<Token>>,
+    token_dict: IndexMap<TokenKind, Vec<Token>>,
     tokens: Vec<Token>,
 }
 
 impl Yang {
+    pub fn get_document(&self) -> &Document {
+        &self.document
+    }
+
     pub fn module_kind(&self) -> &ModuleKind {
         &self.module_kind
     }
@@ -46,11 +50,15 @@ impl Yang {
         }
     }
 
-    pub fn tokens(&self) -> &[Token] {
+    pub fn list_token(&self) -> &[Token] {
         &self.tokens
     }
 
-    pub fn closest_token(&self, row: usize, column: usize) -> Result<Token, YangError> {
+    pub fn search_token(&self, kind: TokenKind) -> Vec<Token> {
+        self.token_dict.get(&kind).cloned().unwrap_or_else(Vec::new)
+    }
+
+    pub fn search_closest_token(&self, row: usize, column: usize) -> Result<Token, YangError> {
         let offset = self.document.rope.line_to_byte(row) + column;
         let mut query_iter = self.token_interval_tree.query(offset..offset + 1);
         let mut closest: Option<Token> = None;
@@ -66,40 +74,32 @@ impl Yang {
         }
         closest.ok_or(YangError::OutOfRange(row, column))
     }
-
-    pub fn find_statement(&self, _kind: StatementKind) -> Vec<Token> {
-        self.statement_dict
-            .get(&_kind)
-            .cloned()
-            .unwrap_or_else(Vec::new)
-    }
-
-    pub fn get_document(&self) -> &Document {
-        &self.document
-    }
 }
 
 #[derive(Debug)]
 pub struct Ryang {
-    modules: IndexMap<u64, Arc<Yang>>,
+    modules: IndexMap<String, Vec<Arc<Yang>>>,
 }
 
 impl Ryang {
     pub fn list(&self) -> Vec<Arc<Yang>> {
-        self.modules.values().cloned().collect()
+        self.modules.values().flatten().cloned().collect()
     }
 
     pub fn search(&self, name: &str) -> Vec<Arc<Yang>> {
-        self.modules
-            .iter()
-            .filter(|(_, m)| name == m.module_name())
-            .map(|(_, v)| v.clone())
-            .collect()
+        self.modules.get(name).cloned().unwrap_or_else(Vec::new)
     }
 
-    pub fn search1(&self, _name: &str, _rev: &str) -> Option<Arc<Yang>> {
-        // Implement search with revision
-        None // Placeholder
+    pub fn search1(&self, name: &str, rev: &str) -> Option<Arc<Yang>> {
+        let candidates: Vec<Arc<Yang>> = self.search(name);
+        candidates.into_iter().find(|m| {
+            m.search_token(TokenKind::Argument(StatementKind::Revision))
+                .iter()
+                .any(|t| {
+                    let rev_text = m.get_document().get_ranged_text(t.range.clone());
+                    rev_text == rev
+                })
+        })
     }
 }
 
@@ -136,7 +136,7 @@ impl RyangBuild {
     }
 
     pub fn compile(&mut self) -> Result<Arc<Ryang>, HashMap<u64, YangError>> {
-        let mut modules = IndexMap::new();
+        let mut modules: IndexMap<String, Vec<Arc<Yang>>> = IndexMap::new();
         let mut errors = HashMap::new();
         for (uid, doc) in &self.documents {
             let mut module_kind: Option<ModuleKind> = None;
@@ -157,15 +157,16 @@ impl RyangBuild {
                                 .iter()
                                 .map(|t| (t.range.clone(), t.clone()))
                                 .collect(),
-                            statement_dict: tokens.iter().fold(IndexMap::new(), |mut acc, t| {
-                                if let TokenKind::Keyword(stmt_kind) = &t.kind {
-                                    acc.entry(*stmt_kind).or_default().push(t.clone());
-                                }
+                            token_dict: tokens.iter().fold(IndexMap::new(), |mut acc, t| {
+                                acc.entry(t.kind.clone()).or_default().push(t.clone());
                                 acc
                             }),
                             tokens,
                         };
-                        modules.insert(uid.clone(), Arc::new(yang));
+                        modules
+                            .entry(yang.module_name().to_string())
+                            .or_default()
+                            .push(Arc::new(yang));
                     } else {
                     }
                 }
@@ -360,25 +361,25 @@ mod tests {
     }
 
     #[test]
-    fn test_yang_closest_token() {
+    fn test_yang_search_closest_token() {
         let mut rb = RyangBuild::new();
         rb.create("module test {\n  prefix t\n}");
         let ryang = rb.compile().expect("Compilation should succeed");
         let modules = ryang.list();
         let module = modules[0].clone();
-        // Assuming tokens are parsed, test closest_token
+        // Assuming tokens are parsed, test search_closest_token
         // This might need adjustment based on actual tokenization
-        let token = module.closest_token(0, 0);
+        let token = module.search_closest_token(0, 0);
         assert!(token.is_ok());
     }
 
     #[test]
-    fn test_yang_find_statement() {
+    fn test_yang_search_token() {
         let mut rb = RyangBuild::new();
         rb.create("module test {\n  prefix t;\n}");
         let ryang = rb.compile().expect("Compilation should succeed");
         let module = &ryang.list()[0];
-        let statements = module.find_statement(StatementKind::Prefix);
+        let statements = module.search_token(TokenKind::Keyword(StatementKind::Prefix));
         assert!(!statements.is_empty());
     }
 }
