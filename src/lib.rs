@@ -31,7 +31,7 @@ pub enum ModuleKind {
 }
 
 #[derive(Clone, Debug)]
-struct SyntaticData {
+struct Syntactics {
     // syntatic information about the module/submodule statement, if present
     module_kind: Option<ModuleKind>,
     // syntatic information about all tokens in the document, indexed by byte range and token kind
@@ -50,7 +50,7 @@ pub struct Yang {
     // raw text with Rope utilities
     rope: Rope,
     // syntatic information about the module/submodule statement, if present
-    syntatic_data: SyntaticData,
+    syntactics: Syntactics,
 }
 
 impl Yang {
@@ -60,17 +60,17 @@ impl Yang {
         Self {
             version,
             rope,
-            syntatic_data: Yang::parse(text),
+            syntactics: Yang::parse(text),
         }
     }
 
     pub(crate) fn update(&mut self, text: &str, version: u64) {
         self.version = version;
         self.rope = Rope::from_str(text);
-        self.syntatic_data = Yang::parse(text);
+        self.syntactics = Yang::parse(text);
     }
 
-    fn parse(text: &str) -> SyntaticData {
+    fn parse(text: &str) -> Syntactics {
         let mut module_kind: Option<ModuleKind> = None;
         let token_list = tokenize(text, |token| {
             if token.kind == TokenKind::Argument(StatementKind::Module) {
@@ -80,7 +80,7 @@ impl Yang {
             }
         })
         .unwrap_or_else(|_| vec![]);
-        SyntaticData {
+        Syntactics {
             module_kind,
             token_interval_tree: IntervalTree::from_iter(
                 token_list.iter().map(|t| (t.range.clone(), t.clone())),
@@ -143,7 +143,7 @@ impl Yang {
 
     /// Returns whether this entry is a `module` or `submodule`.
     pub fn module_kind(&self) -> Option<ModuleKind> {
-        self.syntatic_data.module_kind.clone()
+        self.syntactics.module_kind.clone()
     }
 
     /// Returns the module or submodule name.
@@ -158,7 +158,7 @@ impl Yang {
 
     /// Returns all tokens matching the specified kind.
     pub fn search_token(&self, kind: TokenKind) -> Vec<Token> {
-        self.syntatic_data
+        self.syntactics
             .token_dict
             .get(&kind)
             .cloned()
@@ -170,7 +170,7 @@ impl Yang {
         let offset = self.rope.line_to_byte(row) + column;
         let mut narrowest: Option<Token> = None;
         for element in self
-            .syntatic_data
+            .syntactics
             .token_interval_tree
             .query(offset..offset + 1)
         {
@@ -191,7 +191,7 @@ impl Yang {
     where
         F: FnMut(&Token),
     {
-        for token in &self.syntatic_data.token_list {
+        for token in &self.syntactics.token_list {
             f(token);
         }
     }
