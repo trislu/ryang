@@ -201,8 +201,7 @@ impl Ryang {
         }
     }
 
-    /// Inserts a UTF-8 document and returns its unique identifier.
-    pub fn parse(&mut self, uri: &str, source: &str, version: u64) -> Result<(), YangError> {
+    pub fn upsert(&mut self, uri: &str, source: &str, version: u64) -> Result<(), YangError> {
         if let Some(existing_uid) = self.uid_dict.get(uri) {
             if let Some(existing_yang) = self.yang_dict.get_mut(existing_uid) {
                 if let Some(name) = existing_yang.module_name() {
@@ -348,30 +347,30 @@ mod tests {
     #[test]
     fn test_ryang_get() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
+        assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         let yang = ryang.get("/foo/test.yang");
         assert!(yang.is_some());
         assert_eq!(yang.unwrap().module_name(), Some("test".to_owned()));
     }
 
     #[test]
-    fn test_ryang_parse() {
+    fn test_ryang_load() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
+        assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.get("/foo/test.yang").is_some());
         assert!(ryang.search("test").len() == 1);
         assert!(ryang.search1("test", "2024-01-01").is_none()); // No revision, should not find
     }
 
     #[test]
-    fn test_ryang_parse_update() {
+    fn test_ryang_load_update() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
+        assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.get("/foo/test.yang").is_some());
         assert!(ryang.search("test").len() == 1); // "test" module should be present
         assert!(
             ryang
-                .parse("/foo/test.yang", "module updated {}", 1)
+                .upsert("/foo/test.yang", "module updated {}", 1)
                 .is_ok()
         );
         assert!(ryang.get("/foo/test.yang").is_some());
@@ -382,7 +381,7 @@ mod tests {
     #[test]
     fn test_ryang_remove_ok() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
+        assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         let result = ryang.remove("/foo/test.yang");
         assert!(result.is_ok_and(|uri| uri == "/foo/test.yang"));
     }
@@ -397,16 +396,32 @@ mod tests {
     #[test]
     fn test_ryang_list() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test1.yang", "module test1 {}", 0).is_ok());
-        assert!(ryang.parse("/foo/test2.yang", "module test2 {}", 0).is_ok());
+        assert!(
+            ryang
+                .upsert("/foo/test1.yang", "module test1 {}", 0)
+                .is_ok()
+        );
+        assert!(
+            ryang
+                .upsert("/foo/test2.yang", "module test2 {}", 0)
+                .is_ok()
+        );
         assert_eq!(ryang.list().len(), 2);
     }
 
     #[test]
     fn test_ryang_search() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test1.yang", "module test1 {}", 0).is_ok());
-        assert!(ryang.parse("/foo/test2.yang", "module test2 {}", 0).is_ok());
+        assert!(
+            ryang
+                .upsert("/foo/test1.yang", "module test1 {}", 0)
+                .is_ok()
+        );
+        assert!(
+            ryang
+                .upsert("/foo/test2.yang", "module test2 {}", 0)
+                .is_ok()
+        );
         let results = ryang.search("test1");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].module_name(), Some("test1".to_owned()));
@@ -419,7 +434,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse(
+                .upsert(
                     "/foo/testrev1.yang",
                     "module testrev {\n  namespace \"urn:testrev\";\n  revision 2024-01-01;\n}",
                     0
@@ -428,7 +443,7 @@ mod tests {
         );
         assert!(
             ryang
-                .parse(
+                .upsert(
                     "/foo/testrev2.yang",
                     "module testrev {\n  namespace \"urn:testrev\";\n  revision 2023-01-01;\n}",
                     0
@@ -447,7 +462,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse(
+                .upsert(
                     "/foo/mymodule.yang",
                     "module mymodule {\n  namespace \"urn:mymodule\";\n}",
                     0
@@ -463,7 +478,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse(
+                .upsert(
                     "/foo/sample.yang",
                     "module sample {\n  namespace \"urn:sample\";\n}",
                     0,
@@ -484,7 +499,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse("/foo/test.yang", "module test {\n  prefix t\n}", 0)
+                .upsert("/foo/test.yang", "module test {\n  prefix t\n}", 0)
                 .is_ok()
         );
         let modules = ryang.list();
@@ -500,7 +515,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse("/foo/test.yang", "module test {\n  prefix t;\n}", 0)
+                .upsert("/foo/test.yang", "module test {\n  prefix t;\n}", 0)
                 .is_ok()
         );
         let module = &ryang.list()[0];
