@@ -38,6 +38,8 @@ struct SyntaticData {
     token_interval_tree: IntervalTree<usize, Token>,
     // syntatic information about all tokens in the document, indexed by token kind
     token_dict: HashMap<TokenKind, Vec<Token>>,
+    // all tokens in the document, in order of appearance
+    token_list: Vec<Token>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +72,7 @@ impl Yang {
 
     fn parse(text: &str) -> SyntaticData {
         let mut module_kind: Option<ModuleKind> = None;
-        let tokens = tokenize(text, |token| {
+        let token_list = tokenize(text, |token| {
             if token.kind == TokenKind::Argument(StatementKind::Module) {
                 module_kind = Some(ModuleKind::Module(token.range.clone()));
             } else if token.kind == TokenKind::Argument(StatementKind::Submodule) {
@@ -81,15 +83,16 @@ impl Yang {
         SyntaticData {
             module_kind,
             token_interval_tree: IntervalTree::from_iter(
-                tokens.iter().map(|t| (t.range.clone(), t.clone())),
+                token_list.iter().map(|t| (t.range.clone(), t.clone())),
             ),
-            token_dict: tokens.iter().fold(
+            token_dict: token_list.iter().fold(
                 HashMap::<TokenKind, Vec<Token>>::new(),
                 |mut acc, t| {
                     acc.entry(t.kind.clone()).or_default().push(t.clone());
                     acc
                 },
             ),
+            token_list,
         }
     }
 
@@ -181,6 +184,16 @@ impl Yang {
             }
         }
         narrowest.ok_or(YangError::OutOfRange(row, column))
+    }
+
+    /// Calls `f` for each token in the document, in order of appearance.
+    pub fn foreach_token<F>(&self, mut f: F)
+    where
+        F: FnMut(&Token),
+    {
+        for token in &self.syntatic_data.token_list {
+            f(token);
+        }
     }
 }
 
