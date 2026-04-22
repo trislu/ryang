@@ -43,6 +43,8 @@ struct SyntaticData {
 #[derive(Clone, Debug)]
 /// Parsed representation of a single YANG module or submodule document.
 pub struct Yang {
+    // yang source version
+    version: u64,
     // raw text with Rope utilities
     rope: Rope,
     // syntatic information about the module/submodule statement, if present
@@ -51,15 +53,17 @@ pub struct Yang {
 
 impl Yang {
     /// new creates a Yang instance from a UTF-8 text and its associated tokens.
-    pub(crate) fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str, version: u64) -> Self {
         let rope = Rope::from_str(text);
         Self {
+            version,
             rope,
             syntatic_data: Yang::parse(text),
         }
     }
 
-    pub(crate) fn update(&mut self, text: &str) {
+    pub(crate) fn update(&mut self, text: &str, version: u64) {
+        self.version = version;
         self.rope = Rope::from_str(text);
         self.syntatic_data = Yang::parse(text);
     }
@@ -87,6 +91,12 @@ impl Yang {
                 },
             ),
         }
+    }
+
+    /// Returns the version of the YANG source text.
+    /// This can be used for caching and change detection purposes.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// Returns number of lines in the document.
@@ -183,8 +193,12 @@ pub struct Ryang {
 }
 
 impl Ryang {
+    pub fn contains(&self, uri: &str) -> Option<u64> {
+        self.uid_dict.get(uri).cloned()
+    }
+
     /// Inserts a UTF-8 document and returns its unique identifier.
-    pub fn parse(&mut self, uri: &str, source: &str) -> Result<(), YangError> {
+    pub fn parse(&mut self, uri: &str, source: &str, version: u64) -> Result<(), YangError> {
         if let Some(existing_uid) = self.uid_dict.get(uri) {
             if let Some(existing_yang) = self.yang_dict.get_mut(existing_uid) {
                 if let Some(name) = existing_yang.module_name() {
@@ -196,7 +210,7 @@ impl Ryang {
                         }
                     }
                 }
-                existing_yang.update(source);
+                existing_yang.update(source, version);
                 // Add the existing UID to the name_dict for the new module name, if it exists
                 if let Some(new_name) = existing_yang.module_name() {
                     self.name_dict
@@ -212,7 +226,7 @@ impl Ryang {
             )));
         }
         let uid = YANG_NEXT_UID.fetch_add(1, Ordering::Relaxed);
-        let yang = Yang::new(source);
+        let yang = Yang::new(source, version);
         self.uid_dict.insert(uri.to_string(), uid);
         if let Some(name) = &yang.module_name() {
             self.name_dict.entry(name.clone()).or_default().push(uid);
@@ -280,13 +294,14 @@ mod tests {
 
     #[test]
     fn test_yang_new() {
-        let yang = Yang::new("hello\nworld");
+        let yang = Yang::new("hello\nworld", 0);
         assert_eq!(yang.line_count(), 2);
+        assert_eq!(yang.version(), 0);
     }
 
     #[test]
     fn test_yang_get_line() {
-        let yang: Yang = Yang::new("line1\nline2\nline3");
+        let yang: Yang = Yang::new("line1\nline2\nline3", 0);
         assert_eq!(yang.get_line(0), Some("line1\n".to_string()));
         assert_eq!(yang.get_line(2), Some("line3".to_string()));
         assert_eq!(yang.get_line(3), None);
@@ -294,14 +309,14 @@ mod tests {
 
     #[test]
     fn test_yang_get_slice() {
-        let yang = Yang::new("hello world");
+        let yang = Yang::new("hello world", 0);
         assert_eq!(yang.get_slice(0..5), "hello");
         assert_eq!(yang.get_slice(6..11), "world");
     }
 
     #[test]
     fn test_yang_get_char() {
-        let yang = Yang::new("ab\ncd");
+        let yang = Yang::new("ab\ncd", 0);
         assert_eq!(yang.get_char(0, 0), Some('a'));
         assert_eq!(yang.get_char(1, 1), Some('d'));
         assert_eq!(yang.get_char(2, 0), None);
@@ -309,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_yang_enumerate_lines() {
-        let yang = Yang::new("line1\nline2");
+        let yang = Yang::new("line1\nline2", 0);
         let mut lines = Vec::new();
         yang.foreach_line(|i, s| lines.push((i, s.to_string())));
         assert_eq!(
@@ -320,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_yang_byte_offset_to_point() {
-        let yang = Yang::new("hello\nworld");
+        let yang = Yang::new("hello\nworld", 0);
         assert_eq!(yang.byte_to_point(0), (0, 0));
         assert_eq!(yang.byte_to_point(5), (0, 5)); // after 'o'
         assert_eq!(yang.byte_to_point(6), (1, 0)); // 'w'
@@ -329,7 +344,7 @@ mod tests {
     #[test]
     fn test_ryang_parse() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}").is_ok());
+        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
         assert!(ryang.search("test").len() == 1);
         assert!(ryang.search1("test", "2024-01-01").is_none()); // No revision, should not find
@@ -338,10 +353,14 @@ mod tests {
     #[test]
     fn test_ryang_parse_update() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}").is_ok());
+        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
         assert!(ryang.search("test").len() == 1); // "test" module should be present
-        assert!(ryang.parse("/foo/test.yang", "module updated {}").is_ok());
+        assert!(
+            ryang
+                .parse("/foo/test.yang", "module updated {}", 1)
+                .is_ok()
+        );
         assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
         assert!(ryang.search("updated").len() == 1); // "updated" module should be present after update
         assert!(ryang.search("test").is_empty());
@@ -350,7 +369,7 @@ mod tests {
     #[test]
     fn test_ryang_remove_ok() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test.yang", "module test {}").is_ok());
+        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
         let result = ryang.remove("/foo/test.yang");
         assert!(result.is_ok_and(|uri| uri == "/foo/test.yang"));
     }
@@ -365,16 +384,16 @@ mod tests {
     #[test]
     fn test_ryang_list() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test1.yang", "module test1 {}").is_ok());
-        assert!(ryang.parse("/foo/test2.yang", "module test2 {}").is_ok());
+        assert!(ryang.parse("/foo/test1.yang", "module test1 {}", 0).is_ok());
+        assert!(ryang.parse("/foo/test2.yang", "module test2 {}", 0).is_ok());
         assert_eq!(ryang.list().len(), 2);
     }
 
     #[test]
     fn test_ryang_search() {
         let mut ryang = Ryang::default();
-        assert!(ryang.parse("/foo/test1.yang", "module test1 {}").is_ok());
-        assert!(ryang.parse("/foo/test2.yang", "module test2 {}").is_ok());
+        assert!(ryang.parse("/foo/test1.yang", "module test1 {}", 0).is_ok());
+        assert!(ryang.parse("/foo/test2.yang", "module test2 {}", 0).is_ok());
         let results = ryang.search("test1");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].module_name(), Some("test1".to_owned()));
@@ -389,7 +408,8 @@ mod tests {
             ryang
                 .parse(
                     "/foo/testrev1.yang",
-                    "module testrev {\n  namespace \"urn:testrev\";\n  revision 2024-01-01;\n}"
+                    "module testrev {\n  namespace \"urn:testrev\";\n  revision 2024-01-01;\n}",
+                    0
                 )
                 .is_ok()
         );
@@ -397,7 +417,8 @@ mod tests {
             ryang
                 .parse(
                     "/foo/testrev2.yang",
-                    "module testrev {\n  namespace \"urn:testrev\";\n  revision 2023-01-01;\n}"
+                    "module testrev {\n  namespace \"urn:testrev\";\n  revision 2023-01-01;\n}",
+                    0
                 )
                 .is_ok()
         );
@@ -415,7 +436,8 @@ mod tests {
             ryang
                 .parse(
                     "/foo/mymodule.yang",
-                    "module mymodule {\n  namespace \"urn:mymodule\";\n}"
+                    "module mymodule {\n  namespace \"urn:mymodule\";\n}",
+                    0
                 )
                 .is_ok()
         );
@@ -431,6 +453,7 @@ mod tests {
                 .parse(
                     "/foo/sample.yang",
                     "module sample {\n  namespace \"urn:sample\";\n}",
+                    0,
                 )
                 .is_ok()
         );
@@ -448,7 +471,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse("/foo/test.yang", "module test {\n  prefix t\n}")
+                .parse("/foo/test.yang", "module test {\n  prefix t\n}", 0)
                 .is_ok()
         );
         let modules = ryang.list();
@@ -464,7 +487,7 @@ mod tests {
         let mut ryang = Ryang::default();
         assert!(
             ryang
-                .parse("/foo/test.yang", "module test {\n  prefix t;\n}")
+                .parse("/foo/test.yang", "module test {\n  prefix t;\n}", 0)
                 .is_ok()
         );
         let module = &ryang.list()[0];

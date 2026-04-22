@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         let yang_file_path = yang_file.to_string_lossy().to_string();
         let content = fs::read_to_string(&yang_file)
             .with_context(|| format!("Failed to read {}", yang_file.display()))?;
-        ryang.parse(&yang_file_path, &content)?;
+        ryang.parse(&yang_file_path, &content, 0)?;
     }
     let modules = ryang.list();
     println!("Loaded {} YANG modules", modules.len());
