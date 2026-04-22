@@ -193,8 +193,12 @@ pub struct Ryang {
 }
 
 impl Ryang {
-    pub fn contains(&self, uri: &str) -> Option<u64> {
-        self.uid_dict.get(uri).cloned()
+    pub fn get(&self, uri: &str) -> Option<&Yang> {
+        if let Some(uid) = self.uid_dict.get(uri) {
+            self.yang_dict.get(uid)
+        } else {
+            None
+        }
     }
 
     /// Inserts a UTF-8 document and returns its unique identifier.
@@ -342,10 +346,19 @@ mod tests {
     }
 
     #[test]
+    fn test_ryang_get() {
+        let mut ryang = Ryang::default();
+        assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
+        let yang = ryang.get("/foo/test.yang");
+        assert!(yang.is_some());
+        assert_eq!(yang.unwrap().module_name(), Some("test".to_owned()));
+    }
+
+    #[test]
     fn test_ryang_parse() {
         let mut ryang = Ryang::default();
         assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
-        assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
+        assert!(ryang.get("/foo/test.yang").is_some());
         assert!(ryang.search("test").len() == 1);
         assert!(ryang.search1("test", "2024-01-01").is_none()); // No revision, should not find
     }
@@ -354,14 +367,14 @@ mod tests {
     fn test_ryang_parse_update() {
         let mut ryang = Ryang::default();
         assert!(ryang.parse("/foo/test.yang", "module test {}", 0).is_ok());
-        assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
+        assert!(ryang.get("/foo/test.yang").is_some());
         assert!(ryang.search("test").len() == 1); // "test" module should be present
         assert!(
             ryang
                 .parse("/foo/test.yang", "module updated {}", 1)
                 .is_ok()
         );
-        assert!(ryang.uid_dict.contains_key("/foo/test.yang"));
+        assert!(ryang.get("/foo/test.yang").is_some());
         assert!(ryang.search("updated").len() == 1); // "updated" module should be present after update
         assert!(ryang.search("test").is_empty());
     }
