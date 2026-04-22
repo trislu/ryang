@@ -10,17 +10,27 @@ use tree_sitter_yang::yang::token::{Token, TokenKind, tokenize};
 
 static YANG_NEXT_UID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Error, Debug)]
+#[derive(Error, Clone, Debug)]
 /// Errors returned by YANG parsing and token lookup operations.
 pub enum YangError {
     #[error("Position {0}:{1} out of range")]
     OutOfRange(usize, usize),
-    #[error("Parse error: UID {0}: {1}")]
-    ParseError(u64, String),
+    #[error("Invalid module: {0}")]
+    InvalidModule(String),
     #[error("Internal error: {0}")]
     Internal(String),
     #[error("Not found: {0}")]
     NotFound(String),
+    #[error("Duplicate import: {0}")]
+    DuplicatedImport(String),
+    #[error("Duplicate include: {0}")]
+    DuplicatedInclude(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum YangDiagnostic {
+    Syntactic(Token),
+    Semantic(Token, YangError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,16 +40,26 @@ pub enum ModuleKind {
     Submodule(Range<usize>),
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct SymbolTable {
+    namespace: String,
+    source_module: String,
+    revision: Option<String>,
+    import_stmt: HashMap<String, Vec<Token>>,
+}
+
 #[derive(Clone, Debug)]
 struct Syntactics {
     // syntatic information about the module/submodule statement, if present
-    module_kind: Option<ModuleKind>,
+    module_kind: ModuleKind,
     // syntatic information about all tokens in the document, indexed by byte range and token kind
     token_interval_tree: IntervalTree<usize, Token>,
     // syntatic information about all tokens in the document, indexed by token kind
     token_dict: HashMap<TokenKind, Vec<Token>>,
     // all tokens in the document, in order of appearance
     token_list: Vec<Token>,
+    // syntatic symbal table
+    symbol_table: SymbolTable,
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +70,9 @@ pub struct Yang {
     // raw text with Rope utilities
     rope: Rope,
     // syntatic information about the module/submodule statement, if present
-    syntactics: Syntactics,
+    syntactics: Option<Syntactics>,
+    // diagnostics
+    diagnostics: Vec<YangDiagnostic>,
 }
 
 impl Yang {
@@ -61,6 +83,7 @@ impl Yang {
             version,
             rope,
             syntactics: Yang::parse(text),
+            diagnostics: vec![],
         }
     }
 
@@ -70,18 +93,59 @@ impl Yang {
         self.syntactics = Yang::parse(text);
     }
 
-    fn parse(text: &str) -> Syntactics {
+    fn parse(text: &str) -> Option<Syntactics> {
         let mut module_kind: Option<ModuleKind> = None;
-        let token_list = tokenize(text, |token| {
-            if token.kind == TokenKind::Argument(StatementKind::Module) {
+        let mut symbol_table = SymbolTable::default();
+        let mut diagnostics = Vec::new();
+        let token_list = tokenize(text, |token| match token.kind {
+            // TODO: trim quotation marks if present?
+            TokenKind::Argument(StatementKind::Module) => {
                 module_kind = Some(ModuleKind::Module(token.range.clone()));
-            } else if token.kind == TokenKind::Argument(StatementKind::Submodule) {
-                module_kind = Some(ModuleKind::Submodule(token.range.clone()));
+                symbol_table.source_module = text[token.range.clone()].to_string();
             }
+            TokenKind::Argument(StatementKind::Submodule) => {
+                module_kind = Some(ModuleKind::Submodule(token.range.clone()));
+                symbol_table.source_module = text[token.range.clone()].to_string();
+            }
+            TokenKind::Argument(StatementKind::Revision) => {
+                symbol_table.revision = Some(text[token.range.clone()].to_string());
+            }
+            TokenKind::Argument(StatementKind::Namespace) => {
+                symbol_table.namespace = text[token.range.clone()].to_string();
+            }
+            TokenKind::Argument(StatementKind::Import) => {
+                symbol_table
+                    .import_stmt
+                    .entry(text[token.range.clone()].to_string())
+                    .and_modify(|existed| {
+                        diagnostics.push(YangDiagnostic::Semantic(
+                            token.clone(),
+                            YangError::DuplicatedImport(text[token.range.clone()].to_string()),
+                        ));
+                        existed.push(token.clone());
+                    })
+                    .or_default()
+                    .push(token.clone());
+            }
+            TokenKind::Argument(StatementKind::Include) => {
+                symbol_table
+                    .import_stmt
+                    .entry(text[token.range.clone()].to_string())
+                    .and_modify(|existed| {
+                        diagnostics.push(YangDiagnostic::Semantic(
+                            token.clone(),
+                            YangError::DuplicatedInclude(text[token.range.clone()].to_string()),
+                        ));
+                        existed.push(token.clone());
+                    })
+                    .or_default()
+                    .push(token.clone());
+            }
+            _ => {}
         })
         .unwrap_or_else(|_| vec![]);
-        Syntactics {
-            module_kind,
+        module_kind.map(|kind| Syntactics {
+            module_kind: kind,
             token_interval_tree: IntervalTree::from_iter(
                 token_list.iter().map(|t| (t.range.clone(), t.clone())),
             ),
@@ -93,7 +157,8 @@ impl Yang {
                 },
             ),
             token_list,
-        }
+            symbol_table,
+        })
     }
 
     /// Returns the version of the YANG source text.
@@ -143,7 +208,9 @@ impl Yang {
 
     /// Returns whether this entry is a `module` or `submodule`.
     pub fn module_kind(&self) -> Option<ModuleKind> {
-        self.syntactics.module_kind.clone()
+        self.syntactics
+            .as_ref()
+            .map(|syntactics| syntactics.module_kind.clone())
     }
 
     /// Returns the module or submodule name.
@@ -159,31 +226,44 @@ impl Yang {
     /// Returns all tokens matching the specified kind.
     pub fn search_token(&self, kind: TokenKind) -> Vec<Token> {
         self.syntactics
-            .token_dict
-            .get(&kind)
-            .cloned()
-            .unwrap_or_else(Vec::new)
+            .as_ref()
+            .and_then(|s| s.token_dict.get(&kind).cloned())
+            .unwrap_or_default()
     }
 
     /// Returns the narrowest token that contains the given row/column position.
     pub fn search_narrowest_token(&self, row: usize, column: usize) -> Result<Token, YangError> {
-        let offset = self.rope.line_to_byte(row) + column;
-        let mut narrowest: Option<Token> = None;
-        for element in self
-            .syntactics
-            .token_interval_tree
-            .query(offset..offset + 1)
-        {
-            if narrowest.is_none() {
-                narrowest = Some(element.value.clone());
-            } else {
-                let current_narrowest = narrowest.as_ref().unwrap();
-                if current_narrowest.range.len() < element.value.range.len() {
+        if let Some(syntactics) = &self.syntactics {
+            if row >= self.line_count() {
+                return Err(YangError::OutOfRange(row, column));
+            }
+            let line = self
+                .rope
+                .get_line(row)
+                .unwrap_or_else(|| ropey::RopeSlice::from(""));
+            if column > line.len_chars() {
+                return Err(YangError::OutOfRange(row, column));
+            }
+            let offset = self.rope.line_to_byte(row) + column;
+            let mut narrowest: Option<Token> = None;
+            for element in syntactics.token_interval_tree.query(offset..offset + 1) {
+                if narrowest.is_none() {
                     narrowest = Some(element.value.clone());
+                } else {
+                    let current_narrowest = narrowest.as_ref().unwrap();
+                    if current_narrowest.range.len() < element.value.range.len() {
+                        narrowest = Some(element.value.clone());
+                    }
                 }
             }
+            narrowest.ok_or_else(|| {
+                YangError::NotFound(format!("No token found at position {}:{}", row, column))
+            })
+        } else {
+            Err(YangError::Internal(
+                "Syntactic information not available".to_string(),
+            ))
         }
-        narrowest.ok_or(YangError::OutOfRange(row, column))
     }
 
     /// Calls `f` for each token in the document, in order of appearance.
@@ -191,9 +271,19 @@ impl Yang {
     where
         F: FnMut(&Token),
     {
-        for token in &self.syntactics.token_list {
-            f(token);
+        if let Some(syntactics) = &self.syntactics {
+            for token in &syntactics.token_list {
+                f(token);
+            }
         }
+    }
+
+    pub fn diagnostics(&self) -> &Vec<YangDiagnostic> {
+        &self.diagnostics
+    }
+
+    pub fn symbol_table(&self) -> Option<&SymbolTable> {
+        self.syntactics.as_ref().map(|s| &s.symbol_table)
     }
 }
 
@@ -302,6 +392,8 @@ impl Ryang {
                 })
         })
     }
+
+    pub fn compile(&mut self) {}
 }
 
 #[cfg(test)]

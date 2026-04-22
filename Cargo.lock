@@ -142,6 +142,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "directed-graph"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54927c859d2e7fabce11011dfc876204d33237f0d0dd4dfeed621b4e8f6e2180"
+dependencies = [
+ "indexmap",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,6 +286,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "directed-graph",
  "intervaltree",
  "ropey",
  "strum 0.26.3",
