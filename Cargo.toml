@@ -8,13 +8,11 @@ name = "ryang"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 ropey = "1.6"
 tree-sitter-yang = { git = "https://github.com/trislu/tree-sitter-yang.git", branch = "master" }
 intervaltree = "0.2"
 strum = { version = "0.26", features = ["derive"] }
 strum_macros = "0.26"
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
-indexmap = "2.0"
-tokio = { version = "1.0", features = ["sync"] }

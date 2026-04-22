@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use ryang::{Ryang, RyangBuild};
+use ryang::Ryang;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "ryang")]
@@ -53,7 +52,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut rb = RyangBuild::new();
+    let mut ryang = Ryang::default();
     let mut yang_files = Vec::new();
 
     match cli.mode {
@@ -86,12 +85,11 @@ fn main() -> Result<()> {
     }
 
     for yang_file in yang_files {
+        let yang_file_path = yang_file.to_string_lossy().to_string();
         let content = fs::read_to_string(&yang_file)
             .with_context(|| format!("Failed to read {}", yang_file.display()))?;
-        rb.create(&content);
+        ryang.parse(&yang_file_path, &content)?;
     }
-
-    let ryang: Arc<Ryang> = rb.compile().expect("Compilation should succeed");
     let modules = ryang.list();
     println!("Loaded {} YANG modules", modules.len());
 
