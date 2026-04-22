@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yang_byte_offset_to_point() {
+    fn test_yang_byte_to_point() {
         let yang = Yang::new("hello\nworld", 0);
         assert_eq!(yang.byte_to_point(0), (0, 0));
         assert_eq!(yang.byte_to_point(5), (0, 5)); // after 'o'
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ryang_load() {
+    fn test_ryang_insert_or_update() {
         let mut ryang = Ryang::default();
         assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.get("/foo/test.yang").is_some());
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ryang_load_update() {
+    fn test_ryang_insert_and_update() {
         let mut ryang = Ryang::default();
         assert!(ryang.upsert("/foo/test.yang", "module test {}", 0).is_ok());
         assert!(ryang.get("/foo/test.yang").is_some());
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yang_get_document_and_list_token_and_module_kind() {
+    fn test_yang_module_kind() {
         let mut ryang = Ryang::default();
         assert!(
             ryang
