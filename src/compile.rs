@@ -22,6 +22,7 @@ use crate::schema::{
     ImportInfo, ModuleRecord, NodeId, NodeKind, SchemaNode, SubmoduleRecord, Typedef,
 };
 use crate::syntax::{Statement, StatementKind};
+use crate::value::TypeFacets;
 use crate::yang::{UnitKind, Yang};
 
 /// Result of a build: compiled modules + submodule records + diagnostics.
@@ -43,6 +44,8 @@ struct TypedefDef {
     defining: Location,
     base: Option<String>,
     base_loc: Option<Location>,
+    /// Facets written on the typedef's `type` statement (D31).
+    facets: TypeFacets,
 }
 
 /// An identity's captured definition (owned; used to resolve derivation).
@@ -433,6 +436,10 @@ fn collect_symbols<'a>(stmt: &'a Statement, file: &'a Yang, _module: &str, syms:
                 let name = a.name();
                 if !name.is_empty() {
                     let (base, base_loc) = child_arg(stmt, file, StatementKind::Type);
+                    let facets = stmt
+                        .find_one(StatementKind::Type)
+                        .map(TypeFacets::from_type_stmt)
+                        .unwrap_or_default();
                     syms.typedefs
                         .entry(name.to_string())
                         .or_insert_with(|| TypedefDef {
@@ -442,6 +449,7 @@ fn collect_symbols<'a>(stmt: &'a Statement, file: &'a Yang, _module: &str, syms:
                             },
                             base,
                             base_loc,
+                            facets,
                         });
                 }
             }
@@ -790,6 +798,7 @@ fn build_module(
                 defining: def.defining.clone(),
                 base: def.base.clone(),
                 base_loc: def.base_loc.clone(),
+                facets: def.facets.clone(),
             });
         }
         for (iname, def) in &syms.identities {
@@ -868,6 +877,7 @@ fn expand_node(
         keys: Vec::new(),
         is_key: false,
         type_name: None,
+        facets: TypeFacets::default(),
         removed: false,
     };
 
@@ -907,6 +917,10 @@ fn expand_node(
             StatementKind::Type => {
                 if let Some(a) = c.arg.as_ref() {
                     node.type_name = Some(a.name().to_string());
+                    // D31: capture the leaf's own type-statement restrictions
+                    // (a builtin `type string { length … }`, a direct `leafref`
+                    // `path`, an inline `enumeration`/`bits`, …).
+                    node.facets = TypeFacets::from_type_stmt(c);
                     // report unknown prefixes in type references
                     let t = a.name();
                     if let Some((prefix, _)) = t.split_once(':') {
@@ -1035,6 +1049,7 @@ fn expand_rpc_action_body(
                     keys: Vec::new(),
                     is_key: false,
                     type_name: None,
+                    facets: TypeFacets::default(),
                     removed: false,
                 };
                 let id = arena.len() as NodeId;
@@ -1098,6 +1113,7 @@ fn expand_choice_body(
                     keys: Vec::new(),
                     is_key: false,
                     type_name: None,
+                    facets: TypeFacets::default(),
                     removed: false,
                 };
                 let case_id = arena.len() as NodeId;

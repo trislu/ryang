@@ -30,6 +30,7 @@ mod library;
 mod schema;
 mod syntax;
 mod text;
+mod value;
 mod yang;
 
 pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
@@ -43,6 +44,7 @@ pub use crate::syntax::{
     Argument, Comment, CommentKind, Statement, StatementEnd, StatementKind, Token, TokenKind,
     TokenSpot,
 };
+pub use crate::value::{TypeFacets, ValueType};
 pub use crate::yang::{Import, Include, UnitKind};
 
 use std::collections::HashMap;

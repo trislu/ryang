@@ -11,6 +11,7 @@ use crate::schema::{
     ModuleRecord, SchemaNode, SubmoduleRecord, TypeCandidate, TypeCandidateKind, TypeResolution,
     TypeStep, Typedef,
 };
+use crate::value::{Accum, ValueType, classify};
 
 /// The result of `Repository::compile()`: diagnostics plus, when at least one
 /// module compiled, a snapshot `Library`. Content problems are *never* errors
@@ -385,6 +386,56 @@ impl Library {
             cur_mod = m1;
             cur = next;
         }
+    }
+
+    /// Resolve a leaf/leaf-list's **value type** (D31/M5): reduce its `type`
+    /// reference through the typedef chain to a builtin and classify it,
+    /// accumulating the facets written along the way (`length`/`pattern`/
+    /// `range`, `enum`/`bit` members, `leafref` `path`).
+    ///
+    /// `None` when `id` is not a typed node (no `type` statement). A chain
+    /// that cannot be resolved, or a builtin we do not classify, yields
+    /// [`ValueType::Unknown`]; `union` yields [`ValueType::Union`] (never
+    /// checked, D31).
+    pub fn value_type(&self, module: &str, id: crate::schema::NodeId) -> Option<ValueType> {
+        let rec = self.module(module)?;
+        let node = rec.node(id)?;
+        let type_name = node.type_name()?;
+        let mut acc = Accum::default();
+        acc.fold(node.type_facets());
+        let mut base: Option<&str> = None;
+        if crate::schema::is_builtin_type(type_name) {
+            base = Some(type_name);
+        } else if let Some((m0, l0)) = self.qualify(module, type_name) {
+            let mut cur_mod = m0;
+            let mut local = l0;
+            let mut steps = 0usize;
+            while steps < 64 && base.is_none() {
+                steps += 1;
+                let Some(r) = self.module(&cur_mod) else {
+                    break;
+                };
+                let Some(td) = r.typedefs.iter().find(|t| t.name == local) else {
+                    break;
+                };
+                acc.fold(&td.facets);
+                let Some(b) = td.base.as_deref() else {
+                    break;
+                };
+                if crate::schema::is_builtin_type(b) {
+                    base = Some(b);
+                } else if let Some((m1, l1)) = self.qualify(&cur_mod, b) {
+                    cur_mod = m1;
+                    local = l1;
+                } else {
+                    break;
+                }
+            }
+        }
+        Some(match base {
+            Some(b) => classify(b, &acc),
+            None => ValueType::Unknown,
+        })
     }
 
     /// Resolve an identity and the chain of its bases (its ancestry).

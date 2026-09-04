@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::diag::Location;
+use crate::value::TypeFacets;
 
 /// Arena index of a schema node inside its module.
 pub type NodeId = usize;
@@ -98,6 +99,10 @@ pub struct SchemaNode {
     pub(crate) keys: Vec<String>,
     pub(crate) is_key: bool,
     pub(crate) type_name: Option<String>,
+    /// Facets written on the node's own `type` statement (D31): a leaf whose
+    /// `type` is a builtin may restrict it here; when the `type` names a
+    /// typedef the facets live there instead (see [`Typedef::facets`]).
+    pub(crate) facets: TypeFacets,
     /// Removed by a `deviation … deviate not-supported`.
     pub(crate) removed: bool,
 }
@@ -155,6 +160,10 @@ impl SchemaNode {
     pub fn type_name(&self) -> Option<&str> {
         self.type_name.as_deref()
     }
+    /// Facets written on this node's own `type` statement (leaf/leaf-list).
+    pub fn type_facets(&self) -> &TypeFacets {
+        &self.facets
+    }
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
     }
@@ -180,11 +189,19 @@ pub struct Typedef {
     pub base: Option<String>,
     /// Where the `type` argument is written (for diagnostics).
     pub(crate) base_loc: Option<Location>,
+    /// Facets written on the typedef's `type` statement (D31): restrictions
+    /// (`length`/`pattern`/`range`, `enum`/`bit` members, `leafref` `path`)
+    /// that apply when a leaf's type reduces through this typedef.
+    pub(crate) facets: TypeFacets,
 }
 
 impl Typedef {
     pub fn base(&self) -> Option<&str> {
         self.base.as_deref()
+    }
+    /// Facets written on this typedef's `type` statement.
+    pub fn facets(&self) -> &TypeFacets {
+        &self.facets
     }
 }
 
