@@ -6,6 +6,10 @@ authors = ["trislu <lukai@mail.ustc.edu.cn>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/trislu/yrepo"
+homepage = "https://github.com/trislu/yrepo"
+keywords = ["yang", "lsp", "schema", "parser", "netconf"]
+categories = ["parser-implementations", "development-tools"]
+exclude = ["docs/", "examples/", "tests/"]
 edition = "2024"
 rust-version = "1.90"
 

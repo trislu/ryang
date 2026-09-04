@@ -86,3 +86,7 @@ tests/
   NNN_*.rs      # numbered integration tests
   sample_yang/  # fixture files
 ```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE)
