@@ -1,0 +1,14 @@
+module aug-chain-c {
+  yang-version 1.1;
+  namespace "urn:test:aug-chain-c";
+  prefix c;
+
+  import aug-chain-b { prefix b; }
+  import aug-chain-a { prefix a; }
+
+  // Target /b:root/a:extra is installed by aug-chain-a's augment, so this
+  // only resolves if aug-chain-a's augment ran first (or via the fixpoint).
+  augment "/b:root/a:extra" {
+    leaf deep { type string; }
+  }
+}

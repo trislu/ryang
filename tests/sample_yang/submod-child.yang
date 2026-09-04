@@ -1,0 +1,9 @@
+submodule submod-child {
+  belongs-to submod-parent {
+    prefix sp;
+  }
+
+  leaf child-leaf {
+    type string;
+  }
+}

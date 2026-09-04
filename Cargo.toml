@@ -1,0 +1,17 @@
+[package]
+name = "yrepo"
+description = "LSP-friendly YANG repository: parse, resolve and query YANG modules"
+version = "0.1.0"
+authors = ["trislu <lukai@mail.ustc.edu.cn>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/trislu/yrepo"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "yrepo"
+
+[dependencies]
+tree-sitter = "0.26"
+tree-sitter-yang = "0.3"

@@ -1,0 +1,215 @@
+//! # yrepo
+//!
+//! LSP-friendly YANG repository: parse, resolve, and query YANG modules
+//! (`*.yang`).
+//!
+//! The two public entry points ([D1]):
+//! * [`Repository`] — manages the open documents of a workspace
+//!   (`upsert`/`remove` by url) and compiles them.
+//! * [`Library`] — the resolved snapshot returned by
+//!   [`Repository::compile`], queried for modules/submodules/symbols/nodes.
+//!
+//! User-content problems are reported as [`Diagnostic`]s and never as
+//! `Result::Err` ([D3]).
+//!
+//! ```
+//! use yrepo::Repository;
+//!
+//! let mut repo = Repository::new();
+//! repo.upsert("/mods/m.yang", "module m { namespace \"urn:m\"; prefix m;\n  leaf x { type string; }\n}");
+//! let outcome = repo.compile();
+//! assert!(outcome.diagnostics.is_empty());
+//! let lib = outcome.library.expect("module compiled");
+//! let m = lib.module("m").expect("module found");
+//! assert_eq!(m.top_nodes().len(), 1);
+//! ```
+
+mod compile;
+mod diag;
+mod library;
+mod schema;
+mod syntax;
+mod text;
+mod yang;
+
+pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
+pub use crate::library::{Library, Outcome};
+pub use crate::schema::{
+    AppliedAugment, AppliedDeviation, DeviationOp, ExtensionDef, FeatureDef, Grouping, Identity,
+    IdentityRef, IdentityResolution, ImportInfo, ModuleRecord, NodeId, NodeKind, SchemaNode,
+    SubmoduleRecord, TypeCandidate, TypeCandidateKind, TypeResolution, TypeStep, Typedef,
+};
+pub use crate::syntax::{
+    Argument, Comment, CommentKind, Statement, StatementEnd, StatementKind, Token, TokenKind,
+    TokenSpot,
+};
+pub use crate::yang::{Import, Include, UnitKind};
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::compile::BuildOutcome;
+use crate::yang::Yang;
+
+/// Manages the open documents of a workspace and compiles them into a
+/// [`Library`].
+pub struct Repository {
+    docs: Vec<Yang>,
+    by_url: HashMap<String, usize>,
+}
+
+impl Default for Repository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Repository {
+    pub fn new() -> Repository {
+        Repository {
+            docs: Vec::new(),
+            by_url: HashMap::new(),
+        }
+    }
+
+    /// Insert or replace the document at `url` with `source` and parse it.
+    ///
+    /// Never fails on malformed content — syntax problems surface later as
+    /// [`Diagnostic`]s.
+    pub fn upsert(&mut self, url: impl Into<String>, source: impl Into<String>) {
+        let url = url.into();
+        let parsed = Yang::new(Arc::from(url.as_str()), source.into());
+        match self.by_url.get(&url) {
+            Some(&i) => self.docs[i] = parsed,
+            None => {
+                self.by_url.insert(url, self.docs.len());
+                self.docs.push(parsed);
+            }
+        }
+    }
+
+    /// Remove the document at `url`. Returns `true` if it was present.
+    pub fn remove(&mut self, url: &str) -> bool {
+        if self.by_url.remove(url).is_some() {
+            self.docs.retain(|d| d.url.as_ref() != url);
+            // fix indices after removal
+            for (j, doc) in self.docs.iter().enumerate() {
+                self.by_url.insert(doc.url.to_string(), j);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn contains(&self, url: &str) -> bool {
+        self.by_url.contains_key(url)
+    }
+
+    pub fn len(&self) -> usize {
+        self.docs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty()
+    }
+
+    /// Compile the whole workspace into a fresh [`Library`] snapshot, with
+    /// diagnostics for every document.
+    ///
+    /// The returned `Library` is `None` only when no module could be compiled
+    /// (e.g. an empty workspace or no module document).
+    pub fn compile(&self) -> Outcome {
+        let refs: Vec<&Yang> = self.docs.iter().collect();
+        let BuildOutcome {
+            modules,
+            submodules,
+            diagnostics,
+        } = compile::build(&refs);
+        let library = if modules.is_empty() {
+            None
+        } else {
+            Some(Arc::new(Library::from_parts(modules, submodules)))
+        };
+        Outcome {
+            library,
+            diagnostics,
+        }
+    }
+
+    /// What is under the caret at `(row, col)` (0-based) in the document at
+    /// `url`? Returns the narrowest enclosing statement and where the caret
+    /// falls within it.
+    pub fn token_at(&self, url: &str, row: usize, col: usize) -> Option<TokenHit> {
+        let doc = self.docs.get(*self.by_url.get(url)?)?;
+        let byte = doc.parsed.text.linecol_to_byte(row, col)?;
+        let root = doc.root()?;
+        let stmt = root.narrowest_at(byte)?;
+        let (spot, _) = TokenSpot::of(stmt, byte);
+        Some(TokenHit {
+            statement: stmt.kind.clone(),
+            spot,
+        })
+    }
+
+    /// The root `module`/`submodule` statement of the document at `url` — the
+    /// head of its whole statement tree. Walk it with
+    /// [`Statement::children`] / [`Statement::preorder`]; every node carries
+    /// its [`Statement::kind`], keyword/argument spans and logical argument
+    /// text. Returns `None` when the url is unknown or the document is not a
+    /// YANG module/submodule.
+    ///
+    /// This is the *syntactic* (unresolved) view — for cross-file, resolved
+    /// semantics use [`Repository::compile`] and the resulting [`Library`].
+    pub fn statement(&self, url: &str) -> Option<&Statement> {
+        let doc = self.docs.get(*self.by_url.get(url)?)?;
+        doc.root()
+    }
+
+    /// The narrowest statement under the caret at `(row, col)` (0-based) in the
+    /// document at `url` — a reference into the live document tree, unlike
+    /// [`Repository::token_at`], so callers can read the statement's argument
+    /// string (`.arg`), keyword/statement spans, and children. This is the
+    /// entry point for precise goto/hover (caret in an `import`/`uses`/`type`/
+    /// `augment` argument) and for statement completion.
+    pub fn statement_at(&self, url: &str, row: usize, col: usize) -> Option<&Statement> {
+        let doc = self.docs.get(*self.by_url.get(url)?)?;
+        let byte = doc.parsed.text.linecol_to_byte(row, col)?;
+        doc.root()?.narrowest_at(byte)
+    }
+
+    /// Comments in the document at `url`, in source order.
+    ///
+    /// The [`Statement`] tree models only statements, so comments (which live
+    /// between statements and inside block bodies) are exposed here instead —
+    /// format must never delete them, highlight colors them, and comment-out
+    /// quick-fixes target them. Each [`Comment`] carries its byte `range` and
+    /// raw `text` (markers included). Returns `None` when `url` is unknown.
+    pub fn comments(&self, url: &str) -> Option<&[Comment]> {
+        let doc = self.docs.get(*self.by_url.get(url)?)?;
+        Some(&doc.parsed.comments)
+    }
+
+    /// Raw lexical tokens in the document at `url`, in source order.
+    ///
+    /// A superset of [`Repository::comments`]: every CST leaf the grammar
+    /// produces that the [`Statement`] tree drops — keywords, identifiers,
+    /// quoted-string runs, numeric literals, `true`/`false`, the `+` concat
+    /// operator, comments and punctuation — each with a byte `range` and its
+    /// raw `text`. Highlight can use this for grammar-precise literal coloring
+    /// inside composite arguments (numbers in `range`/`value`, quoted runs,
+    /// `+`, …). Returns `None` when `url` is unknown.
+    pub fn tokens(&self, url: &str) -> Option<&[Token]> {
+        let doc = self.docs.get(*self.by_url.get(url)?)?;
+        Some(&doc.parsed.tokens)
+    }
+}
+
+/// The answer to a caret (positional) query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenHit {
+    /// The narrowest statement under the caret.
+    pub statement: StatementKind,
+    /// Whether the caret is over the keyword, an argument, or elsewhere.
+    pub spot: TokenSpot,
+}

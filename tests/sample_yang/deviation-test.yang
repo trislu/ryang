@@ -1,0 +1,16 @@
+module deviation-test {
+  namespace "urn:deviation-test";
+  prefix dt;
+
+  leaf obsolete-leaf {
+    type string;
+  }
+
+  leaf kept-leaf {
+    type int32;
+  }
+
+  deviation /dt:obsolete-leaf {
+    deviate not-supported;
+  }
+}

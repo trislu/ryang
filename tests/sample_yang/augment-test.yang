@@ -1,0 +1,16 @@
+module augment-test {
+  namespace "urn:augment-test";
+  prefix at;
+
+  container target {
+    leaf original {
+      type string;
+    }
+  }
+
+  augment /at:target {
+    leaf added {
+      type int32;
+    }
+  }
+}

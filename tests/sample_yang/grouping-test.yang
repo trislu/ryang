@@ -1,0 +1,33 @@
+module grouping-test {
+  namespace "urn:grouping-test";
+  prefix gt;
+
+  grouping address {
+    leaf street {
+      type string;
+    }
+    leaf city {
+      type string;
+    }
+    leaf zip {
+      type string;
+    }
+  }
+
+  grouping endpoint {
+    leaf host {
+      type string;
+    }
+    leaf port {
+      type uint16;
+    }
+  }
+
+  container locations {
+    uses address;
+  }
+
+  container connection {
+    uses endpoint;
+  }
+}

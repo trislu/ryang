@@ -1,0 +1,22 @@
+module simple {
+  namespace "urn:simple";
+  prefix s;
+
+  container config {
+    leaf hostname {
+      type string;
+    }
+    leaf port {
+      type uint16;
+      default "8080";
+    }
+    leaf enabled {
+      type boolean;
+      default "true";
+    }
+  }
+
+  leaf description {
+    type string;
+  }
+}

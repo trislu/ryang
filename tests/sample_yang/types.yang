@@ -1,0 +1,63 @@
+module types {
+  namespace "urn:types";
+  prefix t;
+
+  typedef my-int {
+    type int32;
+  }
+
+  leaf str {
+    type string;
+  }
+  leaf num8 {
+    type int8;
+  }
+  leaf num16 {
+    type int16;
+  }
+  leaf num32 {
+    type int32;
+  }
+  leaf num64 {
+    type int64;
+  }
+  leaf unum8 {
+    type uint8;
+  }
+  leaf unum16 {
+    type uint16;
+  }
+  leaf unum32 {
+    type uint32;
+  }
+  leaf unum64 {
+    type uint64;
+  }
+  leaf flag {
+    type boolean;
+  }
+  leaf dec {
+    type decimal64 {
+      fraction-digits 2;
+    }
+  }
+  leaf ref {
+    type leafref {
+      path "../str";
+    }
+  }
+  leaf base-ref {
+    type identityref {
+      base some-base;
+    }
+  }
+  leaf empty-leaf {
+    type empty;
+  }
+  leaf custom {
+    type my-int;
+  }
+  leaf-list tags {
+    type string;
+  }
+}

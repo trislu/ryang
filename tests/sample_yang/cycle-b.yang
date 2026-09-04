@@ -1,0 +1,12 @@
+module cycle-b {
+  namespace "urn:cycle-b";
+  prefix cb;
+
+  import cycle-a {
+    prefix ca;
+  }
+
+  leaf from-b {
+    type string;
+  }
+}

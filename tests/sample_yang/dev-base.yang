@@ -1,0 +1,10 @@
+module dev-base {
+  yang-version 1.1;
+  namespace "urn:test:dev-base";
+  prefix db;
+
+  container system {
+    leaf name { type string; }
+    leaf obsolete { type string; }
+  }
+}

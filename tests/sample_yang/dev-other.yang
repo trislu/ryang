@@ -1,0 +1,17 @@
+module dev-other {
+  yang-version 1.1;
+  namespace "urn:test:dev-other";
+  prefix do;
+
+  import dev-base { prefix db; }
+
+  deviation "/db:system/db:obsolete" {
+    deviate not-supported;
+  }
+
+  deviation "/db:system/db:name" {
+    deviate replace {
+      type string;
+    }
+  }
+}

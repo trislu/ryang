@@ -1,0 +1,7 @@
+module aug-chain-b {
+  yang-version 1.1;
+  namespace "urn:test:aug-chain-b";
+  prefix b;
+
+  container root {}
+}

@@ -1,0 +1,15 @@
+module import-ext {
+  namespace "urn:import-ext";
+  prefix ie;
+
+  import import-base {
+    prefix ib;
+  }
+
+  container extended {
+    leaf extra {
+      type string;
+    }
+    uses ib:definitions;
+  }
+}

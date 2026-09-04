@@ -1,0 +1,37 @@
+module list-choice {
+  namespace "urn:list-choice";
+  prefix lc;
+
+  list server {
+    key "name port";
+    leaf name {
+      type string;
+    }
+    leaf port {
+      type uint16;
+    }
+    leaf enabled {
+      type boolean;
+    }
+  }
+
+  choice transport {
+    case udp {
+      container udp-config {
+        leaf port {
+          type uint16;
+        }
+      }
+    }
+    case tcp {
+      container tcp-config {
+        leaf address {
+          type string;
+        }
+        leaf port {
+          type uint16;
+        }
+      }
+    }
+  }
+}

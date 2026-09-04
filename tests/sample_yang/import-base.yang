@@ -1,0 +1,10 @@
+module import-base {
+  namespace "urn:import-base";
+  prefix ib;
+
+  grouping definitions {
+    leaf item {
+      type string;
+    }
+  }
+}

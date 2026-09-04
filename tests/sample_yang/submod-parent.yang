@@ -1,0 +1,12 @@
+module submod-parent {
+  namespace "urn:submod-parent";
+  prefix sp;
+
+  include submod-child;
+
+  container parent-container {
+    leaf name {
+      type string;
+    }
+  }
+}

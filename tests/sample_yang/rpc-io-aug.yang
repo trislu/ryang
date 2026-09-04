@@ -1,0 +1,19 @@
+module rpc-io-aug {
+  yang-version 1.1;
+  namespace "urn:test:rpc-io-aug";
+  prefix a;
+
+  import rpc-io { prefix r; }
+
+  augment "/r:sys/r:item/r:reset/input" {
+    leaf reason { type string; }
+  }
+
+  augment "/r:sys/r:item/r:reset/output" {
+    leaf finished-at { type string; }
+  }
+
+  augment "/r:op/input" {
+    leaf arg1 { type string; }
+  }
+}
