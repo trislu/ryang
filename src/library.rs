@@ -173,10 +173,10 @@ impl Library {
             return None;
         }
         let (target_name, first_local) = match segments[0].split_once(':') {
-            Some((prefix, local)) => match self.prefix_to_module(module, prefix) {
-                Some(t) => (t.to_string(), local),
-                None => return None,
-            },
+            Some((prefix, local)) => {
+                let t = self.prefix_to_module(module, prefix)?;
+                (t.to_string(), local)
+            }
             None => (module.to_string(), segments[0]),
         };
         let target = self.module(&target_name)?;
