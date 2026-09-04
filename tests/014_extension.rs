@@ -32,7 +32,14 @@ fn test_extension_symbol_resolution() {
         .expect("extension info indexed");
     assert_eq!(info.argument.as_deref(), Some("name"));
     assert!(m.extensions().iter().any(|e| e.name == "validate"));
-    assert_eq!(m.extensions().iter().find(|e| e.name == "validate").unwrap().argument, None);
+    assert_eq!(
+        m.extensions()
+            .iter()
+            .find(|e| e.name == "validate")
+            .unwrap()
+            .argument,
+        None
+    );
 
     // Resolve from a using module: prefix -> module -> extension definition.
     assert_eq!(lib.prefix_to_module("usage", "ext"), Some("ext-base"));

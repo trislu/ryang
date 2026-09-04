@@ -47,6 +47,9 @@ fn decimal64_negative_default_parses() {
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        out.diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+        out.diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
     );
 }

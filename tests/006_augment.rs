@@ -111,21 +111,32 @@ fn test_augment_rpc_action_input_output() {
             .expect("resolved action input");
         assert_eq!(input.name(), "input");
         assert_eq!(input.kind(), NodeKind::Input);
-        assert!(child(m, input, "reason").is_some(), "augment into input missing");
+        assert!(
+            child(m, input, "reason").is_some(),
+            "augment into input missing"
+        );
 
         let output = lib
             .resolve_abs_schema_node_id("rpc-io-aug", "/r:sys/r:item/r:reset/output")
             .expect("resolved action output");
         assert_eq!(output.kind(), NodeKind::Output);
-        assert!(child(m, output, "ok").is_some(), "declared output leaf ok missing");
-        assert!(child(m, output, "finished-at").is_some(), "augment into output missing");
+        assert!(
+            child(m, output, "ok").is_some(),
+            "declared output leaf ok missing"
+        );
+        assert!(
+            child(m, output, "finished-at").is_some(),
+            "augment into output missing"
+        );
 
         // An RPC declaring neither input nor output still exposes both.
         let op_input = lib
             .resolve_abs_schema_node_id("rpc-io-aug", "/r:op/input")
             .expect("resolved rpc input");
         assert_eq!(op_input.kind(), NodeKind::Input);
-        assert!(child(m, op_input, "arg1").is_some(), "augment into rpc input missing");
+        assert!(
+            child(m, op_input, "arg1").is_some(),
+            "augment into rpc input missing"
+        );
     }
 }
-

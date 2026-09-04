@@ -45,6 +45,27 @@ impl NodeKind {
             Output => "output",
         }
     }
+
+    /// Whether this node kind appears directly in instance data (an XML
+    /// element / JSON member): the six data-definition node kinds.
+    ///
+    /// `choice`/`case`/`input`/`output` ([`NodeKind::is_wrapper`]) and
+    /// `rpc`/`action`/`notification` are **not** data nodes.
+    pub const fn is_data(self) -> bool {
+        use NodeKind::*;
+        matches!(self, Container | Leaf | LeafList | List | Anyxml | Anydata)
+    }
+
+    /// Whether this node kind is a **schema-only wrapper**: `choice`,
+    /// `case`, `input`, and `output` never appear in instance data, yet they
+    /// are real nodes of the effective tree. Data-path ↔ schema-path mapping
+    /// for instance documents must skip through them (see
+    /// [`ModuleRecord::data_children`] and
+    /// [`crate::Library::schema_nodeid`]).
+    pub const fn is_wrapper(self) -> bool {
+        use NodeKind::*;
+        matches!(self, Choice | Case | Input | Output)
+    }
 }
 
 /// One node of the effective schema tree.
@@ -60,6 +81,11 @@ pub struct SchemaNode {
     /// Module that owns this node's definition (a grouping defined in module X
     /// yields nodes whose `origin_module` is X even when used in module Y).
     pub(crate) origin_module: Arc<str>,
+    /// Module whose **namespace** owns this node in instance data (RFC 7950
+    /// §7.1.3/§7.13). Direct and augment-born nodes match `origin_module`, but
+    /// nodes instantiated from a grouping via `uses` belong to the *using*
+    /// module even though `origin_module` names the grouping's module.
+    pub(crate) instance_module: Arc<str>,
 
     pub(crate) config: Option<bool>,
     pub(crate) mandatory: bool,
@@ -97,6 +123,13 @@ impl SchemaNode {
     }
     pub fn origin_module(&self) -> &str {
         &self.origin_module
+    }
+    /// The module whose namespace owns this node in an instance document —
+    /// the qualifier to use for XML namespace / JSON module-name mapping.
+    /// Differs from [`SchemaNode::origin_module`] only for nodes instantiated
+    /// from a cross-module grouping via `uses` (RFC 7950 §7.13).
+    pub fn instance_module(&self) -> &str {
+        &self.instance_module
     }
     pub fn is_removed(&self) -> bool {
         self.removed
@@ -404,6 +437,86 @@ impl ModuleRecord {
     }
     pub fn deviations(&self) -> &[AppliedDeviation] {
         &self.deviations
+    }
+
+    /// The `input` child of an `rpc`/`action` node, if any.
+    ///
+    /// `yrepo` always models the `input` and `output` of an rpc/action,
+    /// synthesizing an empty node when the module omits the block (so augments
+    /// targeting `input`/`output` resolve), so this is `Some` for every
+    /// `rpc`/`action` id.
+    pub fn rpc_input(&self, id: NodeId) -> Option<NodeId> {
+        self.kind_child(id, NodeKind::Input)
+    }
+
+    /// The `output` child of an `rpc`/`action` node, if any. Always `Some`
+    /// for `rpc`/`action` ids (see [`ModuleRecord::rpc_input`]).
+    pub fn rpc_output(&self, id: NodeId) -> Option<NodeId> {
+        self.kind_child(id, NodeKind::Output)
+    }
+
+    fn kind_child(&self, id: NodeId, kind: NodeKind) -> Option<NodeId> {
+        self.node(id)?
+            .children()
+            .iter()
+            .copied()
+            .find(|&c| self.node(c).is_some_and(|n| n.kind() == kind))
+    }
+
+    /// Instance-visible ("data") children under `id`: direct data nodes plus
+    /// every node reachable **through** `choice`/`case` wrappers (whose cases
+    /// collapse to their data children, RFC 7950 §7.9). This is the set of
+    /// XML elements / JSON members that may validly appear inside `id`.
+    ///
+    /// `rpc`/`action`/`notification`/`input`/`output` children are **not**
+    /// returned: an rpc's instance content lives under its `input`/`output`
+    /// ([`ModuleRecord::rpc_input`] / [`ModuleRecord::rpc_output`]), and which
+    /// direction applies is a caller/message-context decision.
+    pub fn data_children(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self
+            .node(id)
+            .map(|n| n.children().to_vec())
+            .unwrap_or_default();
+        while let Some(c) = stack.pop() {
+            let Some(node) = self.node(c) else {
+                continue;
+            };
+            match node.kind() {
+                NodeKind::Container
+                | NodeKind::Leaf
+                | NodeKind::LeafList
+                | NodeKind::List
+                | NodeKind::Anyxml
+                | NodeKind::Anydata => out.push(c),
+                NodeKind::Choice | NodeKind::Case => {
+                    stack.extend(
+                        self.node(c)
+                            .into_iter()
+                            .flat_map(|n| n.children().iter().copied()),
+                    );
+                }
+                NodeKind::Rpc
+                | NodeKind::Action
+                | NodeKind::Notification
+                | NodeKind::Input
+                | NodeKind::Output => {}
+            }
+        }
+        out
+    }
+
+    /// The unique instance-visible child of `id` named `name`, if any.
+    ///
+    /// `None` when no data child has that name (callers report an "unknown
+    /// node"). Namespaces are **not** consulted here — an augmented child and
+    /// the instance element's namespace still need matching; use
+    /// [`crate::Library::data_child`] when the namespace is known, to tell
+    /// "wrong namespace" apart from "unknown node".
+    pub fn data_child(&self, id: NodeId, name: &str) -> Option<NodeId> {
+        self.data_children(id)
+            .into_iter()
+            .find(|&c| self.node(c).is_some_and(|n| n.name() == name))
     }
 }
 

@@ -105,6 +105,8 @@ fn test_diamond_include_is_not_a_cycle() {
     let mut includes: Vec<&str> = m.includes().iter().map(|s| s.as_ref()).collect();
     includes.sort_unstable();
     assert_eq!(includes, ["a", "b", "base"]);
-    assert!(find(m, &["shared"]).is_some(), "shared leaf should be folded");
+    assert!(
+        find(m, &["shared"]).is_some(),
+        "shared leaf should be folded"
+    );
 }
-

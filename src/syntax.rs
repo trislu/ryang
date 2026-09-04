@@ -538,7 +538,10 @@ fn build_statement(node: Node, text: &Text) -> Statement {
                     return None;
                 }
                 let start = children.iter().find(|c| c.kind() == "prefix")?.start_byte();
-                let end = children.iter().find(|c| c.kind() == "identifier")?.end_byte();
+                let end = children
+                    .iter()
+                    .find(|c| c.kind() == "identifier")?
+                    .end_byte();
                 Some(start..end)
             })
     };

@@ -86,9 +86,14 @@ struct Index<'a> {
 
 /// The scope in which statements are being expanded.
 struct Scope<'a> {
-    /// Module whose namespace unprefixed names resolve into (and the origin of
-    /// nodes created here).
+    /// Module used to resolve unprefixed names and attributed as the
+    /// `origin_module` (defining module) of nodes created here.
     module: Arc<str>,
+    /// Module whose **namespace** owns nodes created here in instance data
+    /// (`instance_module`). Equal to `module` everywhere except while expanding
+    /// a grouping body via `uses`, where `module` switches to the grouping's
+    /// defining module but `ns` keeps the *using* module (RFC 7950 §7.13).
+    ns: Arc<str>,
     /// The physical document the statements being expanded belong to.
     file: &'a Yang,
 }
@@ -145,10 +150,7 @@ fn fold_submodules<'a>(
 
         if on_path.iter().any(|d| d.url == s.url) {
             // Real cycle: `s` is an ancestor on the current include path.
-            let pos = on_path
-                .iter()
-                .position(|d| d.url == s.url)
-                .unwrap_or(0);
+            let pos = on_path.iter().position(|d| d.url == s.url).unwrap_or(0);
             let mut chain: Vec<String> = on_path[pos..]
                 .iter()
                 .filter_map(|d| d.name.clone())
@@ -721,6 +723,7 @@ fn build_module(
                 if is_top_level_stmt(&stmt.kind) {
                     let scope = Scope {
                         module: Arc::from(name),
+                        ns: Arc::from(name),
                         file: doc,
                     };
                     let id = expand_node(index, &mut arena, diags, &scope, None, stmt, &mut stack);
@@ -853,6 +856,7 @@ fn expand_node(
         defining: location_of(scope.file, stmt),
         used_from: None,
         origin_module: scope.module.clone(),
+        instance_module: scope.ns.clone(),
         config: None,
         mandatory: false,
         presence: None,
@@ -992,8 +996,10 @@ fn expand_rpc_action_body(
     }
 
     let mut ids = Vec::with_capacity(2);
-    let parts: [(NodeKind, Option<&Statement>); 2] =
-        [(NodeKind::Input, input_stmt), (NodeKind::Output, output_stmt)];
+    let parts: [(NodeKind, Option<&Statement>); 2] = [
+        (NodeKind::Input, input_stmt),
+        (NodeKind::Output, output_stmt),
+    ];
     for (kind, part) in parts {
         let name = match kind {
             NodeKind::Input => "input",
@@ -1017,6 +1023,7 @@ fn expand_rpc_action_body(
                     defining: location_of(scope.file, stmt),
                     used_from: None,
                     origin_module: scope.module.clone(),
+                    instance_module: scope.ns.clone(),
                     config: None,
                     mandatory: false,
                     presence: None,
@@ -1079,6 +1086,7 @@ fn expand_choice_body(
                     defining: location_of(scope.file, c),
                     used_from: None,
                     origin_module: scope.module.clone(),
+                    instance_module: scope.ns.clone(),
                     config: None,
                     mandatory: false,
                     presence: None,
@@ -1149,6 +1157,7 @@ fn expand_uses(
 
     let inner_scope = Scope {
         module: module.clone(),
+        ns: scope.ns.clone(),
         file: group.file,
     };
     let mut created = Vec::new();
@@ -1253,14 +1262,14 @@ fn apply_augments<'a>(
                 continue;
             };
             let path = arg.path();
-            let Some((mi, target_node)) =
-                find_node_at_path(index, records, source_module, &path)
+            let Some((mi, target_node)) = find_node_at_path(index, records, source_module, &path)
             else {
                 continue;
             };
             // Expand content in the *augmenting* module's scope.
             let scope = Scope {
                 module: source_module.clone(),
+                ns: source_module.clone(),
                 file,
             };
             let mut stack = Vec::new();
@@ -1349,9 +1358,7 @@ fn apply_deviations<'a>(
             continue;
         };
         let path = arg.path();
-        let Some((mi, node_id)) =
-            find_node_at_path(index, records, source_module, &path)
-        else {
+        let Some((mi, node_id)) = find_node_at_path(index, records, source_module, &path) else {
             diags.push(Diagnostic::error(
                 Some(file.url.clone()),
                 Some(arg.range.clone()),

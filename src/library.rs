@@ -97,6 +97,18 @@ impl Library {
             .map(|&i| &self.modules[i])
     }
 
+    // ---- modules by namespace -------------------------------------------
+
+    /// Every module declaring `ns` as its `namespace`. Usually zero or one;
+    /// several modules/revisions can share a namespace, so callers must
+    /// disambiguate (e.g. by local-name uniqueness).
+    pub fn modules_by_namespace(&self, ns: &str) -> Vec<&ModuleRecord> {
+        self.modules
+            .iter()
+            .filter(|m| m.namespace() == Some(ns))
+            .collect()
+    }
+
     // ---- submodules -----------------------------------------------------
 
     pub fn submodules(&self) -> &[SubmoduleRecord] {
@@ -200,6 +212,73 @@ impl Library {
                 .copied()?;
         }
         target.node(current)
+    }
+
+    /// Find the instance-visible child of `id` (in `module`'s arena) whose
+    /// local name is `name` **and** whose instance module (the module owning
+    /// its namespace in instance data, RFC 7950 §7.13) declares the namespace
+    /// `ns`.
+    ///
+    /// Contrast [`ModuleRecord::data_child`], which matches the name only:
+    /// this returns `None` on a namespace mismatch even when the name exists
+    /// (→ "wrong namespace"), while the name-only call distinguishes "unknown
+    /// node". Augmented and grouping-born children live in the target module's
+    /// arena but keep their own instance module, so this searches through
+    /// `choice`/`case` wrappers exactly like the data tree does.
+    pub fn data_child(
+        &self,
+        module: &str,
+        id: crate::schema::NodeId,
+        ns: &str,
+        name: &str,
+    ) -> Option<crate::schema::NodeId> {
+        let rec = self.module(module)?;
+        for c in rec.data_children(id) {
+            let Some(node) = rec.node(c) else {
+                continue;
+            };
+            if node.name() != name {
+                continue;
+            }
+            let owner_ns = self
+                .module(node.instance_module())
+                .and_then(|m| m.namespace());
+            if owner_ns == Some(ns) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    /// Render the canonical absolute-schema-nodeid of an effective node — the
+    /// path from its module's top **including** `choice`/`case`/`input`/
+    /// `output` wrappers — prefixing each segment by the **instance module**
+    /// that owns the segment's namespace (RFC 7950 §7.13; a grouping-born
+    /// node is addressed with the *using* module's prefix, not the grouping
+    /// module's), falling back to the module name when it has no prefix.
+    ///
+    /// This is the *schema* path: instance documents express the shorter
+    /// *data* path that skips the wrapper nodes, so a data path cannot be fed
+    /// back to schema-path-based resolution verbatim.
+    pub fn schema_nodeid(&self, module: &str, id: crate::schema::NodeId) -> Option<String> {
+        let rec = self.module(module)?;
+        let mut chain = Vec::new();
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            chain.push(c);
+            cur = rec.node(c).and_then(|n| n.parent());
+        }
+        chain.reverse();
+        let mut segs = Vec::with_capacity(chain.len());
+        for c in chain {
+            let node = rec.node(c)?;
+            let prefix = self
+                .module(node.instance_module())
+                .and_then(|m| m.prefix().map(str::to_owned))
+                .unwrap_or_else(|| node.instance_module().to_string());
+            segs.push(format!("{prefix}:{}", node.name()));
+        }
+        Some(format!("/{}", segs.join("/")))
     }
 
     // ---- type / identity resolution (existence + chain, D13) ------------
@@ -466,5 +545,272 @@ impl Library {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::Repository;
+    use crate::schema::NodeKind;
+
+    use super::Library;
+
+    /// Compile a set of `(url, source)` YANG documents into a `Library`.
+    fn compile(src: &[(&str, &str)]) -> Arc<Library> {
+        let mut repo = Repository::new();
+        for (url, text) in src {
+            repo.upsert(*url, *text);
+        }
+        repo.compile()
+            .library
+            .expect("module set should compile to a library")
+    }
+
+    fn v(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn names(lib: &Library, module: &str, ids: &[usize]) -> Vec<String> {
+        let rec = lib.module(module).unwrap();
+        let mut out: Vec<String> = ids
+            .iter()
+            .map(|&i| rec.node(i).expect("node id").name().to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Top-level node id by name (independent of the new data helpers).
+    fn top_id(lib: &Library, module: &str, name: &str) -> usize {
+        let rec = lib.module(module).unwrap();
+        rec.top_nodes()
+            .iter()
+            .copied()
+            .find(|&i| rec.node(i).unwrap().name() == name)
+            .unwrap_or_else(|| panic!("no top node '{name}'"))
+    }
+
+    /// Descend through **direct** children by name, so test setup does not
+    /// depend on the code under test.
+    fn child_id(lib: &Library, module: &str, root: usize, path: &[&str]) -> usize {
+        let rec = lib.module(module).unwrap();
+        let mut cur = root;
+        for name in path {
+            cur = rec
+                .node(cur)
+                .unwrap()
+                .children()
+                .iter()
+                .copied()
+                .find(|&c| rec.node(c).unwrap().name() == *name)
+                .unwrap_or_else(|| panic!("child '{name}' not found under {cur}"));
+        }
+        cur
+    }
+
+    /// Module A: container with a direct leaf + a `choice` (explicit case and
+    /// a shorthand-case leaf) + an rpc with `input`/`output`.
+    const MOD_A: &str = r#"module a {
+  yang-version 1.1;
+  namespace "urn:a";
+  prefix a;
+  revision 2026-01-01;
+  container c {
+    leaf direct { type string; }
+    choice ch {
+      case c1 { leaf l1 { type string; } }
+      leaf short { type string; }
+    }
+  }
+  rpc op {
+    input { leaf arg1 { type string; } }
+    output { leaf result { type string; } }
+  }
+}"#;
+
+    /// Module B: augments a new leaf `x` into module A's `c`.
+    const MOD_B: &str = r#"module b {
+  yang-version 1.1;
+  namespace "urn:b";
+  prefix b;
+  revision 2026-01-01;
+  import a { prefix a; }
+  augment "/a:c" { leaf x { type string; } }
+}"#;
+
+    #[test]
+    fn node_kind_data_wrapper_classifiers() {
+        assert!(NodeKind::Container.is_data());
+        assert!(NodeKind::Leaf.is_data());
+        assert!(NodeKind::LeafList.is_data());
+        assert!(NodeKind::List.is_data());
+        assert!(NodeKind::Anyxml.is_data());
+        assert!(NodeKind::Anydata.is_data());
+        assert!(!NodeKind::Rpc.is_data());
+        assert!(!NodeKind::Notification.is_data());
+
+        assert!(NodeKind::Choice.is_wrapper());
+        assert!(NodeKind::Case.is_wrapper());
+        assert!(NodeKind::Input.is_wrapper());
+        assert!(NodeKind::Output.is_wrapper());
+        assert!(!NodeKind::Leaf.is_wrapper());
+        assert!(!NodeKind::Container.is_wrapper());
+        assert!(!NodeKind::Rpc.is_wrapper());
+    }
+
+    #[test]
+    fn data_children_skip_choice_case_wrappers() {
+        let lib = compile(&[("/a.yang", MOD_A)]);
+        let rec = lib.module("a").unwrap();
+
+        // Container `c`: the choice's cases collapse to their data children;
+        // `choice ch` / `case c1` / the shorthand `case short` never appear.
+        let c = top_id(&lib, "a", "c");
+        assert_eq!(
+            names(&lib, "a", &rec.data_children(c)),
+            v(&["direct", "l1", "short"])
+        );
+
+        // Choice and case are transparent to data navigation too.
+        let ch = child_id(&lib, "a", c, &["ch"]);
+        assert_eq!(
+            names(&lib, "a", &rec.data_children(ch)),
+            v(&["l1", "short"])
+        );
+        let c1 = child_id(&lib, "a", ch, &["c1"]);
+        assert_eq!(names(&lib, "a", &rec.data_children(c1)), v(&["l1"]));
+
+        // Name lookup through the wrappers, and unknown-name detection.
+        let l1 = rec.data_child(c, "l1").expect("l1 is visible under c");
+        assert_eq!(rec.node(l1).unwrap().kind(), NodeKind::Leaf);
+        assert!(rec.data_child(c, "nope").is_none());
+        assert!(
+            rec.data_child(c, "ch").is_none(),
+            "choice is not a data child"
+        );
+        assert!(
+            rec.data_child(c, "c1").is_none(),
+            "case is not a data child"
+        );
+    }
+
+    #[test]
+    fn rpc_input_output_data_direction() {
+        let lib = compile(&[("/a.yang", MOD_A)]);
+        let rec = lib.module("a").unwrap();
+
+        let op = top_id(&lib, "a", "op");
+        // The rpc's own instance-visible children exclude input/output.
+        assert!(rec.data_children(op).is_empty());
+
+        let input = rec.rpc_input(op).expect("synthesized input present");
+        let output = rec.rpc_output(op).expect("synthesized output present");
+        assert_eq!(rec.node(input).unwrap().kind(), NodeKind::Input);
+        assert_eq!(rec.node(output).unwrap().kind(), NodeKind::Output);
+        assert_eq!(names(&lib, "a", &rec.data_children(input)), v(&["arg1"]));
+        assert_eq!(names(&lib, "a", &rec.data_children(output)), v(&["result"]));
+    }
+
+    #[test]
+    fn schema_nodeid_includes_wrappers() {
+        let lib = compile(&[("/a.yang", MOD_A)]);
+        let c = top_id(&lib, "a", "c");
+        let l1 = child_id(&lib, "a", c, &["ch", "c1", "l1"]);
+
+        assert_eq!(lib.schema_nodeid("a", c).as_deref(), Some("/a:c"));
+        // The data path is "/a:c/a:l1" — the schema path re-inserts
+        // choice/case wrappers.
+        assert_eq!(
+            lib.schema_nodeid("a", l1).as_deref(),
+            Some("/a:c/a:ch/a:c1/a:l1")
+        );
+    }
+
+    #[test]
+    fn augmented_children_and_namespace_lookup() {
+        let lib = compile(&[("/a.yang", MOD_A), ("/b.yang", MOD_B)]);
+        let rec_a = lib.module("a").unwrap();
+        let c = top_id(&lib, "a", "c");
+
+        // Augmented leaf `x` (module b) is a data child of a:c.
+        assert_eq!(
+            names(&lib, "a", &rec_a.data_children(c)),
+            v(&["direct", "l1", "short", "x"])
+        );
+        let x = rec_a.data_child(c, "x").expect("x visible under a:c");
+        assert_eq!(rec_a.node(x).unwrap().origin_module(), "b");
+
+        // Namespace-aware lookup: x is urn:b; a bare-name match with the
+        // wrong namespace is None (distinguishing "wrong ns" from "unknown").
+        assert_eq!(lib.data_child("a", c, "urn:b", "x"), Some(x));
+        assert_eq!(lib.data_child("a", c, "urn:a", "x"), None);
+        assert_eq!(lib.data_child("a", c, "urn:b", "nope"), None);
+        let direct = rec_a.data_child(c, "direct").unwrap();
+        assert_eq!(lib.data_child("a", c, "urn:a", "direct"), Some(direct));
+
+        // Augmented nodes render under their own module's prefix.
+        assert_eq!(lib.schema_nodeid("a", x).as_deref(), Some("/a:c/b:x"));
+
+        // Namespace index.
+        assert_eq!(
+            lib.modules_by_namespace("urn:b")
+                .iter()
+                .map(|m| m.name())
+                .collect::<Vec<_>>(),
+            vec!["b"]
+        );
+        assert!(lib.modules_by_namespace("urn:missing").is_empty());
+    }
+
+    /// Module G: defines a grouping with a nested container + leaf.
+    const MOD_G: &str = r#"module g {
+  yang-version 1.1;
+  namespace "urn:g";
+  prefix g;
+  revision 2026-01-01;
+  grouping gg {
+    container gc {
+      leaf x { type string; }
+    }
+  }
+}"#;
+
+    /// Module U: uses module G's grouping inside its own container.
+    const MOD_U: &str = r#"module u {
+  yang-version 1.1;
+  namespace "urn:u";
+  prefix u;
+  revision 2026-01-01;
+  import g { prefix g; }
+  container uc {
+    uses g:gg;
+  }
+}"#;
+
+    #[test]
+    fn uses_born_nodes_take_the_using_modules_namespace() {
+        let lib = compile(&[("/g.yang", MOD_G), ("/u.yang", MOD_U)]);
+        let rec = lib.module("u").unwrap();
+        let uc = top_id(&lib, "u", "uc");
+
+        // grouping-born container gc is a data-visible child of u:uc
+        let gc = rec.data_child(uc, "gc").expect("gc visible under uc");
+        // definition module is g (goto/defining), instance owner is u
+        assert_eq!(rec.node(gc).unwrap().origin_module(), "g");
+        assert_eq!(rec.node(gc).unwrap().instance_module(), "u");
+        // nested grouping content also keeps the using module
+        let x = rec.data_child(gc, "x").expect("x visible under gc");
+        assert_eq!(rec.node(x).unwrap().instance_module(), "u");
+
+        // Namespace-aware lookup keys on the instance owner: matches urn:u,
+        // not urn:g (even though the grouping is defined in g).
+        assert_eq!(lib.data_child("u", uc, "urn:u", "gc"), Some(gc));
+        assert_eq!(lib.data_child("u", uc, "urn:g", "gc"), None);
+
+        // schema-nodeid prefixes by the instance module (u), not origin (g).
+        assert_eq!(lib.schema_nodeid("u", gc).as_deref(), Some("/u:uc/u:gc"));
+        assert_eq!(lib.schema_nodeid("u", x).as_deref(), Some("/u:uc/u:gc/u:x"));
     }
 }
