@@ -37,6 +37,8 @@ pub struct TypeFacets {
     pub path: Option<String>,
     /// The `require-instance` argument (leafref base), when written here.
     pub require_instance: Option<bool>,
+    /// The `base` argument (identityref base), when written here.
+    pub base: Option<String>,
 }
 
 impl TypeFacets {
@@ -73,6 +75,9 @@ impl TypeFacets {
                 }
                 StatementKind::RequireInstance => {
                     f.require_instance = c.arg.as_ref().map(|a| a.name() == "true");
+                }
+                StatementKind::Base => {
+                    f.base = c.arg.as_ref().map(|a| a.logical.trim().to_string());
                 }
                 _ => {}
             }
@@ -121,7 +126,11 @@ pub enum ValueType {
         path: Option<String>,
         require_instance: bool,
     },
-    Identityref,
+    /// `identityref` — the value must name `base` or a derived identity (or
+    /// any identity when no `base` is declared).
+    Identityref {
+        base: Option<String>,
+    },
     InstanceIdentifier,
     /// `union` — deliberately not checked (first-match ambiguity).
     Union,
@@ -162,6 +171,7 @@ pub(crate) struct Accum {
     pub members: Vec<String>,
     pub path: Option<String>,
     pub require_instance: Option<bool>,
+    pub base: Option<String>,
 }
 
 impl Accum {
@@ -186,6 +196,9 @@ impl Accum {
         }
         if self.require_instance.is_none() {
             self.require_instance = f.require_instance;
+        }
+        if self.base.is_none() {
+            self.base = f.base.clone();
         }
     }
 }
@@ -223,7 +236,9 @@ pub(crate) fn classify(base: &str, acc: &Accum) -> ValueType {
             path: acc.path.clone(),
             require_instance: acc.require_instance.unwrap_or(true),
         },
-        "identityref" => V::Identityref,
+        "identityref" => V::Identityref {
+            base: acc.base.clone(),
+        },
         "instance-identifier" => V::InstanceIdentifier,
         "union" => V::Union,
         other => match integer_spec(other) {
@@ -331,7 +346,7 @@ mod tests {
         assert!(vt(&l, "u").is_union());
         // refs are not checked scalars.
         assert!(matches!(vt(&l, "lr"), ValueType::Leafref { .. }));
-        assert_eq!(vt(&l, "idr"), ValueType::Identityref);
+        assert_eq!(vt(&l, "idr"), ValueType::Identityref { base: None });
         for name in ["a", "b", "i8", "d64", "bo", "em", "bin", "en", "bi"] {
             assert!(vt(&l, name).is_checked(), "{name}");
         }
@@ -405,5 +420,54 @@ mod tests {
         );
         // Union typedef → silent.
         assert_eq!(vt(&l, "maybe1"), ValueType::Union);
+    }
+
+    const IDENT: &str = r#"module m {
+  yang-version 1.1;
+  namespace "urn:im";
+  prefix im;
+  revision 2026-01-01;
+  identity base;
+  identity child { base base; }
+  identity other;
+  container c {
+    leaf ref { type identityref { base base; } }
+  }
+}"#;
+
+    #[test]
+    fn identityref_captures_base_and_checks_semantically() {
+        let l = lib(IDENT);
+        let vt = vt(&l, "ref");
+        assert!(matches!(vt, ValueType::Identityref { base: Some(_) }));
+        // value_type resolves the raw `base` name.
+        assert_eq!(
+            vt,
+            ValueType::Identityref {
+                base: Some("base".to_owned())
+            }
+        );
+        // Semantic membership: base itself and derived identities are fine.
+        assert_eq!(
+            l.check_identityref("m", Some("base"), "m:base"),
+            crate::IdentityStatus::Ok
+        );
+        assert_eq!(
+            l.check_identityref("m", Some("base"), "m:child"),
+            crate::IdentityStatus::Ok
+        );
+        // Unknown identity vs. not derived vs. no base.
+        assert_eq!(
+            l.check_identityref("m", Some("base"), "m:other"),
+            crate::IdentityStatus::NotDerived
+        );
+        assert_eq!(
+            l.check_identityref("m", Some("base"), "m:nope"),
+            crate::IdentityStatus::UnknownIdentity
+        );
+        assert_eq!(
+            l.check_identityref("m", None, "m:other"),
+            crate::IdentityStatus::Ok
+        );
     }
 }

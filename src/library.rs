@@ -21,6 +21,17 @@ pub struct Outcome {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Result of an `identityref` value check ([`Library::check_identityref`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// The value names an existing identity that is the `base` or derived from it.
+    Ok,
+    /// The value's module qualifier (or the identity) could not be resolved.
+    UnknownIdentity,
+    /// The identity exists but is neither the `base` nor derived from it.
+    NotDerived,
+}
+
 /// The resolved, queryable database for a workspace.
 pub struct Library {
     modules: Vec<ModuleRecord>,
@@ -540,6 +551,56 @@ impl Library {
             };
             cur_mod = m1;
             cur = next;
+        }
+    }
+
+    /// Resolve an identity QName in `module`'s scope: a qualifier that names a
+    /// compiled module wins; otherwise it is treated as an import prefix.
+    fn qresolve(&self, module: &str, q: &str) -> Option<(String, String)> {
+        match q.split_once(':') {
+            None => Some((module.to_string(), q.to_string())),
+            Some((p, local)) => {
+                if self.module(p).is_some() {
+                    Some((p.to_string(), local.to_string()))
+                } else {
+                    self.prefix_to_module(module, p)
+                        .map(|m| (m.to_string(), local.to_string()))
+                }
+            }
+        }
+    }
+
+    /// Semantic check for an `identityref` leaf value (D31 / M5): `value` is a
+    /// QName (`module:name`, or `prefix:name` in `module`'s scope). With `base`
+    /// (the identityref's `base`, resolved in `module`'s scope) the identity
+    /// must be the `base` or derived from it; with no `base`, any existing
+    /// identity is accepted.
+    pub fn check_identityref(
+        &self,
+        module: &str,
+        base: Option<&str>,
+        value: &str,
+    ) -> IdentityStatus {
+        let Some((vm, vl)) = self.qresolve(module, value) else {
+            return IdentityStatus::UnknownIdentity;
+        };
+        let Some(rec) = self.module(&vm) else {
+            return IdentityStatus::UnknownIdentity;
+        };
+        let Some(id) = rec.identities.iter().find(|i| i.name == vl) else {
+            return IdentityStatus::UnknownIdentity;
+        };
+        let Some(base) = base else {
+            return IdentityStatus::Ok;
+        };
+        // An unresolvable base is a schema problem; stay silent on values.
+        let Some((bm, bl)) = self.qresolve(module, base) else {
+            return IdentityStatus::Ok;
+        };
+        if self.identity_reaches(&vm, id, &bm, &bl) {
+            IdentityStatus::Ok
+        } else {
+            IdentityStatus::NotDerived
         }
     }
 

@@ -34,7 +34,7 @@ mod value;
 mod yang;
 
 pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
-pub use crate::library::{Library, Outcome};
+pub use crate::library::{IdentityStatus, Library, Outcome};
 pub use crate::schema::{
     AppliedAugment, AppliedDeviation, DeviationOp, ExtensionDef, FeatureDef, Grouping, Identity,
     IdentityRef, IdentityResolution, ImportInfo, ModuleRecord, NodeId, NodeKind, SchemaNode,
