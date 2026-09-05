@@ -140,6 +140,7 @@ src/
                effective-tree expansion, augment/deviation, validation
   schema.rs    semantic model: ModuleRecord, SchemaNode arena, symbols
   library.rs   Library (resolved DB) + Outcome + queries
+  value.rs     leaf value typing: TypeFacets capture + ValueType (D19)
   diag.rs      Diagnostic / Severity / DiagnosticCode
 ```
 
@@ -177,6 +178,11 @@ modules would add ceremony without clarity.
 | identity completion | `Library::identity_candidates(module) -> Vec<String>` — own identities + imported `prefix:name` (D13) |
 | prefix→module | `Library::prefix_to_module(module, prefix)` — own prefix, imports, and folded `belongs-to` prefixes |
 | resolve schema-nodeid | `Library::resolve_abs_schema_node_id(module, path) -> Option<&SchemaNode>` — goto/hover on augment/refine/deviation args (D9) |
+| ns → modules | `Library::modules_by_namespace(ns) -> Vec<&ModuleRecord>` — an XML element namespace may be shared by several modules (D18) |
+| schema nodeid | `Library::schema_nodeid(module, id) -> Option<String>` — canonical absolute nodeid **including** `choice`/`case`/`input`/`output` wrappers, each segment prefixed by its instance module (D18) |
+| data-visible children | `ModuleRecord::data_children(id) -> Vec<NodeId>` / `data_child(id, name)` — instance-visible children through `choice`/`case` wrappers; an rpc/action's body lives under `rpc_input(id)` / `rpc_output(id)` (always present) (D18) |
+| value typing | `Library::value_type(module, id) -> Option<ValueType>` — reduce a leaf/leaf-list type through the typedef chain to a scalar builtin, accumulating facets (`length`/`pattern`/`range`, `enum`/`bit` members, `leafref` `path`, `identityref` `base`); re-exported `TypeFacets` / `ValueType` (D19) |
+| identityref check | `Library::check_identityref(module, base, value) -> IdentityStatus` — `Ok` / `UnknownIdentity` / `NotDerived`; semantic membership of an identityref value against its `base` (D19) |
 | syntax: statement tree | `Repository::statement(url) -> Option<&Statement>` — the document's root `module`/`submodule` statement; enumerate the whole tree via `.children` / `.preorder()` (D11) |
 | syntax: caret node | `Repository::statement_at(url, row, col) -> Option<&Statement>` — the narrowest statement under the caret; read its argument string / spans for precise goto/hover (D11) |
 | syntax: comments | `Repository::comments(url) -> Option<&[Comment]>` — comments in source order (the statement tree does not model them); each has a byte `range`, a `Line`/`Block` `kind`, and raw `text` (D12) |
@@ -212,9 +218,12 @@ coloring; consumers wanting the whole quoted run use the statement
 `Argument.range` instead.
 
 Effective nodes (`SchemaNode`) expose: kind, name, parent/children ids, defining
-`Location`, `uses`-site `Location` (grouping-born nodes), origin module, keys /
-is-key, config / mandatory / presence / default / status / ordered-by /
-min/max-elements, type name, removed flag.
+`Location`, `uses`-site `Location` (grouping-born nodes), **origin module** (the
+defining module) and **instance module** (the module owning the node's namespace
+in an instance document — equal for direct/augment nodes, the *using* module for
+grouping-born nodes, D18), keys / is-key, config / mandatory / presence /
+default / status / ordered-by / min/max-elements, type name, the facets captured
+on the node's own `type` statement (`type_facets()`, D19), and the removed flag.
 
 `extension`/`feature` statements are **symbols** like typedefs/groupings: the
 defining module indexes them (`ModuleRecord::extensions()`/`features()`,
@@ -232,8 +241,11 @@ target a node installed by another augment regardless of document order.
 
 Deferred (documented, not implemented): `complete_abs_schema_node_id`
 (augment-argument path completion), statement completion, per-doc incremental
-cache, `.yin`, XPath/leafref resolution, RFC 7950 restriction-subset
-validation (type/identity derivation semantics beyond existence).
+cache, `.yin`, XPath/leafref **evaluation** and leafref value chasing. RFC 7950
+restriction **facets** are captured and exposed (`TypeFacets`/`ValueType`, D19)
+and semantic `identityref` membership is implemented (`check_identityref`);
+their *enforcement* (value diagnostics) is the consumer's job — the sibling
+netconf-language-server tracks it as D31.
 
 ## 8. Decision log
 
@@ -256,6 +268,8 @@ validation (type/identity derivation semantics beyond existence).
 | D15 | **Raw token stream** (`Repository::tokens(url) -> Option<&[Token]>`, re-exported `Token { kind, range, text }` / `TokenKind`). The `Statement` tree (D11) and `comments` (D12) expose structure and comment ranges but drop the grammar's literal tokens (statement keywords, argument identifiers, quoted strings, unquoted numbers, booleans, `+`). `tokens` provides the grammar-precise lexical stream from the same single parse — disjoint, source-ordered spans, a superset of comments — enough for LSP `semanticTokens`/highlighting without a second parse or a hand-rolled lexer. Classification is by CST leaf kind (`comment`, `identifier`, `integer_value`/`decimal_value`, `boolean`/`true`/`false`, `+`, `*_keyword`, reserved argument words) with a quoted-text fallback for monolithic tokens such as the `namespace` URI. `TokenKind` is `#[non_exhaustive]`. Chosen over a consumer-side lexer or re-exposing raw tree-sitter. **Grammar quirk:** quoted `range`/`length` args are lexed by tree-sitter-yang as numbers + punctuation, not one `quoted_string` (verified by CST sexp dump), which suits "numbers in range" coloring. |
 | D16 | **`extension`/`feature` symbols.** `extension` and `feature` statements are symbols like `typedef`/`grouping`/`identity`: indexed in `schema.rs` (re-exported `ExtensionDef { name, defining, argument }` / `FeatureDef { name, defining }`) and exposed via `ModuleRecord::extensions()`/`features()`. A `prefix:name` *usage* of an extension resolves through the import to its definition — `Library::search_extension`/`search_feature` — the data goto/hover relies on. In the statement tree an extension usage is an `unknown_stmt` whose head `prefix:name` is treated as its keyword span. `feature` is indexed; `if-feature` semantics are not modelled. |
 | D17 | **Effective-tree guarantees for cross-module resolution.** (1) An `rpc`/`action` always has an `input` and an `output` schema node — synthesized empty when the source omits the block — so augments may target an implicit `input`/`output` (RFC 7950 §7.14/§7.15; regression: `ietf-ipv4/ipv6-unicast-routing` augments). (2) Module-level `augment`s are applied to a **fixpoint**: passes keep going until nothing new applies, so an augment may target a node that *another* augment installs regardless of upsert order (regression: `aug-chain-c` targeting `aug-chain-a`'s node — the real-world `ietf-ip-mounted`/`ietf-interfaces-mounted` case). Resolution thus depends only on the final schema, never on document order. |
+| D18 | **Instance-data queries.** Every node exposes its **instance module** — the module whose namespace owns it in an instance document; equal to `origin_module` except for nodes instantiated from a cross-module grouping via `uses`, where it is the *using* module (RFC 7950 §7.13). `ModuleRecord::data_children`/`data_child` give the instance-visible children through `choice`/`case` wrappers (data path ≠ schema path); an `rpc`/`action`'s body is reached via `rpc_input`/`rpc_output` (always present). `Library::modules_by_namespace` maps an XML element namespace to modules (several may share one); `Library::schema_nodeid` renders the canonical wrapper-inclusive absolute nodeid, segments prefixed by their instance module. Backs the sibling netconf-language-server's instance mapping (its D29/D30). |
+| D19 | **Leaf value typing + semantic `identityref`.** The compiler captures a `type` statement's facets on the leaf **and** each typedef (`TypeFacets`); `Library::value_type` reduces a leaf/leaf-list type through the typedef chain to a scalar `ValueType`, accumulating `length`/`pattern`/`range`, `enum`/`bit` members (most-derived wins), `leafref` `path`, and the `identityref` `base`. `union` is classified but never *checked* (RFC 7950 §9.12). `Library::check_identityref` gives semantic membership (`IdentityStatus`). yrepo captures/exposes; *enforcement* is the consumer's (netconf-language-server D31). |
 
 The audit decisions referenced by code comments and tests (`A2`, `A5`, `A6`)
 are recorded here under their original labels so those references stay valid:
@@ -270,9 +284,12 @@ are recorded here under their original labels so those references stay valid:
 
 - `refine` / `uses-augment` are applied best-effort.
 - Identity derivation and typedef-chain **existence/resolution** are
-  implemented (D13); RFC 7950 **restriction-subset semantics** (range/length/
-  pattern/enum/bits), leafref XPath evaluation, and deviation `replace`
-  semantics are not.
+  implemented (D13). RFC 7950 restriction **facets** (range/length/pattern/
+  enum/bits) and the `identityref` `base` are now **captured and exposed** (D19),
+  and semantic `identityref` membership is implemented (`check_identityref`),
+  but yrepo does not *enforce* values — that lives in the consumer
+  (netconf-language-server D31). Leafref XPath evaluation and deviation
+  `replace` semantics are not implemented.
 - `extension`/`feature` are indexed as symbols (D16); `if-feature` and
   extension-usage semantics beyond the declared `argument` name are not
   modelled.

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Effective-tree queries for instance documents** (data path ≠ schema path):
+  `ModuleRecord::data_children` / `data_child` (instance-visible children
+  through `choice`/`case` wrappers), `rpc_input`/`rpc_output` (always present),
+  `SchemaNode::instance_module` (the module whose **namespace** owns a node —
+  equals `origin_module` except for grouping-born nodes via `uses`), and
+  `Library::modules_by_namespace` / `Library::schema_nodeid` (canonical
+  wrapper-inclusive nodeid, instance-module prefixes).
+- **Leaf value typing** (`src/value.rs`): `TypeFacets` captured from each
+  `type` statement (leaf and typedef), and `Library::value_type` which reduces a
+  leaf/leaf-list type through the typedef chain to a `ValueType` — a scalar
+  builtin (`String`/`Integer`/`Decimal64`/`Boolean`/`Empty`/`Binary`/
+  `Enumeration`/`Bits`) with the facets accumulated along the chain, or
+  `Leafref`/`Identityref`/`InstanceIdentifier`/`Union`/`Unknown`.
+- **Semantic `identityref` check**: `Library::check_identityref(module, base,
+  value) -> IdentityStatus` (`Ok`/`UnknownIdentity`/`NotDerived`) — the value
+  must name an existing identity that is the `base` or derived from it.
+
 ## [0.1.0] - 2026-09-05
 
 Initial public release of `yrepo`, an LSP-friendly YANG schema toolkit

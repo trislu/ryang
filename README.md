@@ -3,6 +3,8 @@
 [![Rust CI](https://github.com/trislu/yrepo/actions/workflows/rust.yml/badge.svg)](https://github.com/trislu/yrepo/actions/workflows/rust.yml)
 [![Cargo Publish](https://github.com/trislu/yrepo/actions/workflows/cargo-publish.yml/badge.svg)](https://github.com/trislu/yrepo/actions/workflows/cargo-publish.yml)
 [![GitHub Release](https://github.com/trislu/yrepo/actions/workflows/github-release.yml/badge.svg)](https://github.com/trislu/yrepo/actions/workflows/github-release.yml)
+[![Latest Version](https://img.shields.io/crates/v/yrepo.svg)](https://crates.io/crates/yrepo)
+[![License](https://img.shields.io/crates/l/yrepo.svg)](LICENSE)
 
 An [LSP](https://microsoft.github.io/language-server-protocol/)-friendly YANG
 schema toolkit (parse + resolved semantic model), written in Rust. Currently
@@ -61,6 +63,52 @@ let comments = repo.comments("/m.yang").unwrap();
 assert!(comments.is_empty());
 ```
 
+## Semantic queries & value typing
+
+Beyond the syntax view, `Library` answers semantic queries over the resolved
+model: module/symbol lookup, identity derivation, and the **effective/expanded
+schema tree** (groupings instantiated per `uses`, shorthand `case`s
+materialized, `rpc`/`action` `input`/`output` always present, cross-module
+`augment`/`deviation` applied). For instance documents the tree is queried
+through *data-visible* children (looking through `choice`/`case` wrappers) and
+per-node **instance-module** namespaces, so XML/JSON mapping keys on the module
+that owns a node's namespace rather than where it was defined.
+
+Leaf **value typing** reduces a leaf/leaf-list's `type` through the typedef
+chain to a scalar builtin and classifies it — `string` (with `length`/
+`pattern`), integers (`int8`…`uint64`, with `range`), `decimal64`, `boolean`,
+`empty`, `binary`, `enumeration`/`bits` (with members), plus `leafref`,
+`identityref`, `instance-identifier`, and `union` (deliberately not checked —
+a bare value can't be attributed to one member, RFC 7950 §9.12). Facets are
+captured from the leaf **and** each typedef's `type` statement.
+
+```rust
+use yrepo::{IdentityStatus, Repository, ValueType};
+
+let mut repo = Repository::new();
+repo.upsert("/m.yang", r#"module m {
+  yang-version 1.1; namespace "urn:m"; prefix m;
+  identity base;
+  identity child { base base; }
+  typedef port { type uint16 { range "1..65535"; } }
+  leaf p { type port; }
+  leaf kind { type identityref { base base; } }
+}"#);
+let lib = repo.compile().library.expect("library");
+let m = lib.module("m").expect("module m");
+let p = m.nodes().iter().position(|n| n.name() == "p").unwrap();
+match lib.value_type("m", p) {
+    Some(ValueType::Integer { signed: false, bits: 16, ranges }) => {
+        assert_eq!(ranges, vec!["1..65535"]);
+    }
+    _ => unreachable!(),
+}
+assert_eq!(
+    lib.check_identityref("m", Some("base"), "m:child"),
+    IdentityStatus::Ok
+);
+```
+
 ## Notes
 
 - User-content problems (parse errors, unresolved imports, bad keys, …) are
@@ -81,6 +129,7 @@ src/
   compile.rs    # symbol scan, effective-tree expansion, augment/deviation
   schema.rs     # semantic model types (effective nodes, module records)
   library.rs    # Library + queries
+  value.rs      # leaf value typing: TypeFacets capture + ValueType
   diag.rs       # Diagnostic / Severity / DiagnosticCode
 tests/
   NNN_*.rs      # numbered integration tests
