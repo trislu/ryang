@@ -45,8 +45,11 @@ by per-document tree-sitter CST retention — the current biggest lever.
 
 - Diagnostics: dangling `leafref` absolute `path` expressions are flagged
   (predicates stripped segment-wise, prefixes resolved via the origin module;
-  reported once per authored site; relative paths deferred to the leafref
-  engine — `025_leafref_path.rs`).
+  reported once per authored site; relative paths are instance-context
+  dependent (a grouping instantiated at different depths makes the arena
+  parent chain diverge from authored intent), so validation never guesses
+  them — the leafref engine resolves them from a concrete instance when
+  available — `025_leafref_path.rs`).
 - Diagnostics: duplicate sibling node names are flagged only for the
   record's OWN module and same physical file (authoring mistakes); cross-module
   augment collisions and multi-revision merge duplicates are not reported
