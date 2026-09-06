@@ -28,3 +28,18 @@ default = []
 # by default to keep the dependency tree lean; consumers who open/compile many
 # documents at once can enable it.
 parallel = ["dep:rayon"]
+
+# Release tools and benchmarks use the same optimization profile as the
+# language server (LTO + single codegen unit + stripped), so example timings
+# (perf/serveperf/catmem/…) are representative of served builds.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3
+
+
+# Local override while developing an unpublished tree-sitter-yang grammar fix
+# (remove it once the fix is released and the dependency version is bumped).
+[patch.crates-io]
+tree-sitter-yang = { path = "../tree-sitter-yang" }

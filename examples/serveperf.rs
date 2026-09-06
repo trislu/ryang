@@ -9,7 +9,8 @@
 //! transport overhead.
 //!
 //! Usage:
-//!   serveperf <dir> [--roots N] [--limit K] [--no-text-light]
+//!   serveperf <dir> [--roots N] [--limit K] [--root-name N]
+//!              [--csv out.csv] [--no-compile] [--no-text-light]
 //!
 //! `--limit K` scans only the first K walked files (sorted), for stepwise
 //! scale curves (each run is a fresh process, so RSS at a limit is that
@@ -65,11 +66,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = args
         .get(1)
-        .expect("serveperf <dir> [--roots N] [--limit K]");
+        .expect("serveperf <dir> [--roots N] [--limit K] [--root-name N] [--csv f] [--no-compile] [--no-text-light]");
     let mut roots_n: usize = 20;
     let mut limit: Option<usize> = None;
     let mut light = true;
     let mut root_name: Option<String> = None;
+    let mut csv: Option<std::path::PathBuf> = None;
+    let mut do_compile = true;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -87,6 +90,14 @@ fn main() {
             "--limit" => {
                 limit = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
+            }
+            "--csv" => {
+                csv = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 2;
+            }
+            "--no-compile" => {
+                do_compile = false;
+                i += 1;
             }
             "--no-text-light" => {
                 light = false;
@@ -123,29 +134,101 @@ fn main() {
         peak_kb()
     );
 
-    // Phase 2: materialize + compile the open closure (first N names, or one
-    // named root with --root-name).
+    // Phase 2 (optional): materialize + compile the open closure (first N
+    // names, or one named root with --root-name).
     let roots: Vec<String> = match root_name {
         Some(name) => vec![name],
         None => names.into_iter().take(roots_n).collect(),
     };
-    let t2 = Instant::now();
-    let repo = yrepo::build_closure_repository(&index, &roots, light, &|url| {
-        std::fs::read_to_string(url).ok()
-    });
-    let out = repo.compile();
-    let dt2 = t2.elapsed();
-    let lib = out.library.as_ref();
-    println!(
-        "[serveperf] closure roots={} modules={} submodules={} diags={} wall_s={:.2} rss_kb={} peak_kb={}",
-        roots.len(),
-        lib.map(|l| l.modules().len()).unwrap_or(0),
-        lib.map(|l| l.submodules().len()).unwrap_or(0),
-        out.diagnostics.len(),
-        dt2.as_secs_f64(),
-        rss_kb(),
-        peak_kb()
-    );
+    let (dt2, modules, submodules, diags) = if do_compile {
+        let t2 = Instant::now();
+        let repo = yrepo::build_closure_repository(&index, &roots, light, &|url| {
+            std::fs::read_to_string(url).ok()
+        });
+        let out = repo.compile();
+        let lib = out.library.as_ref();
+        println!(
+            "[serveperf] closure roots={} modules={} submodules={} diags={} wall_s={:.2} rss_kb={} peak_kb={}",
+            roots.len(),
+            lib.map(|l| l.modules().len()).unwrap_or(0),
+            lib.map(|l| l.submodules().len()).unwrap_or(0),
+            out.diagnostics.len(),
+            t2.elapsed().as_secs_f64(),
+            rss_kb(),
+            peak_kb()
+        );
+        (
+            t2.elapsed().as_secs_f64(),
+            lib.map(|l| l.modules().len()).unwrap_or(0),
+            lib.map(|l| l.submodules().len()).unwrap_or(0),
+            out.diagnostics.len(),
+        )
+    } else {
+        (0.0f64, 0usize, 0usize, 0usize)
+    };
+    if let Some(path) = csv {
+        append_csv(
+            &path,
+            &Row {
+                files: files.len(),
+                roots: roots.len(),
+                light,
+                catalog_s: dt1.as_secs_f64(),
+                catalog_rss_kb: rss_kb(),
+                catalog_peak_kb: peak_kb(),
+                closure_s: dt2,
+                modules,
+                submodules,
+                diags,
+            },
+        );
+    }
+}
+
+/// One measurement row (kept small so `append_csv` stays under the clippy
+/// argument budget).
+struct Row {
+    files: usize,
+    roots: usize,
+    light: bool,
+    catalog_s: f64,
+    catalog_rss_kb: u64,
+    catalog_peak_kb: u64,
+    closure_s: f64,
+    modules: usize,
+    submodules: usize,
+    diags: usize,
+}
+
+/// Append one CSV row (`header,files,roots,light,catalog_s,catalog_rss_kb,`
+/// `catalog_peak_kb,closure_s,modules,submodules,diags`) — header row written
+/// when the file does not exist yet.
+fn append_csv(path: &std::path::Path, r: &Row) {
+    use std::io::Write;
+    let fresh = !path.exists();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open csv");
+    if fresh {
+        writeln!(f, "files,roots,light,catalog_s,catalog_rss_kb,catalog_peak_kb,closure_s,modules,submodules,diags").unwrap();
+    }
+    writeln!(
+        f,
+        "{},{},{},{:.3},{},{},{:.3},{},{},{}",
+        r.files,
+        r.roots,
+        r.light,
+        r.catalog_s,
+        r.catalog_rss_kb,
+        r.catalog_peak_kb,
+        r.closure_s,
+        r.modules,
+        r.submodules,
+        r.diags
+    )
+    .unwrap();
 }
 
 /// All module names in the index, sorted (the deterministic root picker).
