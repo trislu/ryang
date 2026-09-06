@@ -44,6 +44,20 @@ fn main() {
     let mut tok_count: u64 = 0;
     let mut tok_bytes: u64 = 0;
     let mut comment_count: u64 = 0;
+    use yrepo::StatementKind;
+    // Pure-text statements: large owned-string bodies with no schema
+    // semantics (description/reference/organization/contact and friends).
+    let textlike = |k: &StatementKind| {
+        matches!(
+            k,
+            StatementKind::Description
+                | StatementKind::Reference
+                | StatementKind::Organization
+                | StatementKind::Contact
+        )
+    };
+    let mut txt_stmts: u64 = 0;
+    let mut txt_arg_bytes: u64 = 0;
     for path in &files {
         let url = path.to_string_lossy().to_string();
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -56,6 +70,10 @@ fn main() {
                 stmts_total += 1;
                 if let Some(a) = &s.arg {
                     arg_bytes += a.logical.len() as u64;
+                    if textlike(&s.kind) {
+                        txt_stmts += 1;
+                        txt_arg_bytes += a.logical.len() as u64;
+                    }
                 }
             }
         }
@@ -92,6 +110,11 @@ fn main() {
         100.0 * (arg_bytes + tok_bytes) as f64 / source_bytes as f64
     );
     println!("comments={comment_count}");
+    println!(
+        "text_like_stmts={txt_stmts}  text_like_arg_bytes={txt_arg_bytes}  ({:.1}% of source, {:.1}% of all arg bytes)",
+        100.0 * txt_arg_bytes as f64 / source_bytes as f64,
+        100.0 * txt_arg_bytes as f64 / arg_bytes.max(1) as f64
+    );
     let per_file = source_bytes as f64 / files_done as f64;
     println!("avg_source_per_file={per_file:.0}B");
 }

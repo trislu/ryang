@@ -33,6 +33,8 @@ parallel` for a single-threaded ingest path.
 `examples/catmem.rs` measures CATALOG-only retention (`Catalog::scan`, header
 fields only, transient parse) with interval RSS/VmHWM logs — the retention
 model for serving very large trees.
+`examples/closure.rs` parses+compiles only the import closure of N root
+modules over a catalog (serving-by-closure prototype; RSS/time logs).
 `examples/memcomp.rs` is the non-parallel retention DECOMPOSITION tool: after
 sequentially ingesting a tree it totals statements, owned argument-string
 bytes, token-string bytes and comments per document, for estimating string

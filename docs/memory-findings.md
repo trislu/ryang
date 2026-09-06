@@ -83,6 +83,22 @@ feasible as an in-process catalog (before any closure compiles), unlike
 full-parse retention. Next: trim remaining catalog fields if needed, then the
 language-server catalog-wide scan + on-demand closure compile.
 
+## Text-only statement share (description/reference/organization/contact)
+
+memcomp on 486 real RFC modules: text-like statements are 44 962 of 126 552
+(35%); their owned argument bytes are **51.3% of source and 79.8% of all
+argument-string bytes** (4.87 MB of 6.10 MB). On the realistic synthetic set
+the share is 20.6%/45.6%. The token stream stores the same quoted strings
+again (token text ≈ arg bytes + quotes), so removing text-only statements
+from BOTH the Statement tree and the token stream could drop roughly
+arg(4.9 MB) + token(≈5 MB) per 9.5 MB-source subset plus ~45k statement
+nodes. No LSP feature reads description/reference/… bodies (hover/goto/
+completion/rename ignore them), so an opt-in "text-light" parse mode is the
+candidate next optimization — default OFF to keep existing consumers/tests.
+Closure-scope compile prototype (`examples/closure.rs`): 20 real roots →
+41-file closure parsed+compiled at 22.5 MB RSS (vs 486-file full retention),
+validating the serve-by-closure model.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
