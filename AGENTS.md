@@ -34,7 +34,7 @@ feature (2026-09-06):
 
 | tool | result |
 | --- | --- |
-| `inspect` | ~0.45–0.6 s; **1975** diagnostics (1639 errors / 336 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 829, unresolved-grouping 317, duplicate-module 278 (warnings), unresolved-typedef 193, parse-error 100, unresolved-import 85, unresolved-identity 85, not-a-yang-document 58, unresolved-prefix 18, key-leaf-not-found 9 |
+| `inspect` | ~0.45–0.6 s; **1477** diagnostics (1154 errors / 323 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 410, unresolved-grouping 326, duplicate-module 278 (warnings), unresolved-typedef 193, parse-error 60, unresolved-identity 85, unresolved-import 48, not-a-yang-document 41, unresolved-prefix 22, key-leaf-not-found 9, list-without-key 4 (warnings) |
 | `perf` (single) | ~0.45–0.65 s wall / ~3.8–4.5 s CPU; RSS ~3 MB → **~721 MB peak** (VmHWM) |
 
 Treat these as a regression guard: if parse/compile/retention changes move time
@@ -88,9 +88,13 @@ by per-document tree-sitter CST retention — the current biggest lever.
   (`042_default_symbol_arg.rs`; cleared ietf-netconf-time, ietf-syslog), and
   double-quoted strings accept arbitrary backslash escapes (`\*`, `\S`, `\.`,
   `043_escape_sequences.rs`; cleared ietf-netconf-acm, ietf-ipfix-psamp,
-  DRAFT ietf-isis). All are wired into yrepo via the local `[patch.crates-io]`
-  override — keep that patch until the fixes are version-bumped/published.
-  Residual corpus parse-errors (~100) are remaining grammar gaps / invalid
+  DRAFT ietf-isis), and concatenated/trailing-whitespace `key`/`unique`
+  arguments parse as opaque quoted strings (`047_key_unique_concat.rs`,
+  grammar-side) — the latter unblocked whole-module collapses that cascaded
+  not-a-yang-document and unresolved-import/grouping/augment noise. All are
+  wired into yrepo via the local `[patch.crates-io]` override — keep that
+  patch until the fixes are version-bumped/published.
+  Residual corpus parse-errors (~60) are remaining grammar gaps / invalid
   MIB transcripts, mostly in `experimental/ietf-extracted-YANG-modules` — see
   the `issue-hunter` skill.
 
