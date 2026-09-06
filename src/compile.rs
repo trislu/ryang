@@ -80,11 +80,14 @@ struct SymTab<'a> {
 
 /// Immutable cross-module lookup tables shared by all expansion passes.
 struct Index<'a> {
+    /// Per module-instance symbol tables, keyed by instance url.
     syms: HashMap<String, SymTab<'a>>,
-    /// prefix -> module name, per module.
+    /// prefix -> module name, per module name (canonical instance).
     prefix_maps: HashMap<String, HashMap<String, Arc<str>>>,
-    /// module name -> index into `records`.
+    /// module name -> index into `records` (canonical: highest revision).
     module_index: HashMap<String, usize>,
+    /// module name -> canonical instance url.
+    canon: HashMap<String, String>,
 }
 
 /// The scope in which statements are being expanded.
@@ -395,12 +398,25 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         syms: HashMap::new(),
         prefix_maps: HashMap::new(),
         module_index: HashMap::new(),
+        canon: HashMap::new(),
     };
     // `module_index` (name -> position in `to_compile` = future `records`
     // index) is filled up front: augment/deviation resolution consults it only
     // after every record exists, and `records` is built in `to_compile` order.
     for (i, m) in to_compile.iter().enumerate() {
-        index.module_index.insert(m.name.clone().unwrap(), i);
+        let n = m.name.clone().unwrap();
+        let rev = m.revision.clone().unwrap_or_default();
+        match index.module_index.get(&n) {
+            Some(&j) => {
+                let cur = to_compile[j].revision.clone().unwrap_or_default();
+                if rev > cur {
+                    index.module_index.insert(n, i);
+                }
+            }
+            None => {
+                index.module_index.insert(n, i);
+            }
+        }
     }
 
     // Symbol/prefix scan is independent per module — run in parallel when the
@@ -436,11 +452,32 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
                 collect_symbols(root, doc, &name, &mut syms);
             }
         }
-        (name, pmap, syms)
+        (
+            m.url.to_string(),
+            name,
+            m.revision.clone().unwrap_or_default(),
+            pmap,
+            syms,
+        )
     });
-    for (name, pmap, syms) in scanned {
-        index.prefix_maps.insert(name.clone(), pmap);
-        index.syms.insert(name, syms);
+    // Symbol tables are keyed per module INSTANCE (url): each revision of a
+    // name keeps its own symbols. `prefix_maps` keeps ONE canonical instance
+    // per name — the one with the highest revision — because all name-based
+    // reference resolution below is canonical-latest.
+    let mut pmaps: HashMap<String, (String, String, HashMap<String, Arc<str>>)> = HashMap::new();
+    for (url, name, rev, pmap, syms) in scanned {
+        index.syms.insert(url.clone(), syms);
+        let better = match pmaps.get(&name) {
+            None => true,
+            Some((cur, _, _)) => rev > *cur,
+        };
+        if better {
+            pmaps.insert(name, (rev, url, pmap));
+        }
+    }
+    for (name, (_rev, url, pmap)) in pmaps {
+        index.canon.insert(name.clone(), url);
+        index.prefix_maps.insert(name, pmap);
     }
 
     // ---- 4+5. expand + apply augment/deviation --------------------------
@@ -832,7 +869,7 @@ fn build_module(
     for doc in content {
         // unresolved imports (of this module or folded submodules)
         for imp in &doc.imports {
-            if !index.syms.contains_key(imp.module.as_str()) {
+            if !index.module_index.contains_key(imp.module.as_str()) {
                 diags.push(Diagnostic::error(
                     Some(doc.url.clone()),
                     Some(imp.range.clone()),
@@ -899,8 +936,8 @@ fn build_module(
         }
     }
 
-    // materialize symbols (from the index's symbol table for this module)
-    if let Some(syms) = index.syms.get(name) {
+    // materialize symbols from THIS module instance's symbol table (url key)
+    if let Some(syms) = index.syms.get(m.url.as_ref()) {
         for (gname, g) in &syms.groupings {
             rec.groupings.push(Grouping {
                 name: gname.clone(),
@@ -1262,9 +1299,11 @@ fn expand_uses(
         return Vec::new();
     };
     let (module, local) = qualify(index, scope.module.as_ref(), arg.name());
+    // Resolve the grouping in the CANONICAL instance of the referenced module.
     let group = index
-        .syms
+        .canon
         .get(module.as_ref())
+        .and_then(|url| index.syms.get(url.as_str()))
         .and_then(|syms| syms.groupings.get(&local));
 
     let Some(group) = group else {
@@ -1594,11 +1633,21 @@ fn symbol_local(text: &str) -> &str {
 /// (no RFC 7950 restriction-subset semantics).
 fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    let by_name: HashMap<&str, usize> = records
-        .iter()
-        .enumerate()
-        .map(|(i, r)| (r.name.as_str(), i))
-        .collect();
+    let mut by_name: HashMap<&str, usize> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        match by_name.get(r.name.as_str()) {
+            None => {
+                by_name.insert(r.name.as_str(), i);
+            }
+            Some(&j) => {
+                let rev = r.revision.as_deref().unwrap_or("");
+                let cur = records[j].revision.as_deref().unwrap_or("");
+                if rev > cur {
+                    by_name.insert(r.name.as_str(), i);
+                }
+            }
+        }
+    }
 
     // typedef -> its base type
     for rec in records {
