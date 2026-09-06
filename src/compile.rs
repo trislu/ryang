@@ -509,22 +509,35 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     }
 
     // Apply module-level augments after every base tree exists.
-    let mut pending_augs: Vec<(Arc<str>, &Yang, &Statement)> = Vec::new();
-    let mut pending_devs: Vec<(Arc<str>, &Yang, &Statement, DeviationOp)> = Vec::new();
+    // Each augment/deviation is attributed to the module INSTANCE that
+    // physically declares it (its source file), so pinned import bindings of
+    // that instance drive target resolution.
+    let rec_by_url: HashMap<Arc<str>, usize> = records
+        .iter()
+        .enumerate()
+        .flat_map(|(i, r)| r.source_urls.iter().cloned().map(move |u| (u, i)))
+        .collect();
+    let mut pending_augs: Vec<(Arc<str>, usize, &Yang, &Statement)> = Vec::new();
+    let mut pending_devs: Vec<(Arc<str>, usize, &Yang, &Statement, DeviationOp)> = Vec::new();
     for m in &to_compile {
         let name = m.name.clone().unwrap();
         let content: Vec<&Yang> = std::iter::once(*m)
             .chain(content_of.get(&name).cloned().unwrap_or_default())
             .collect();
         for doc in &content {
+            let owner = rec_by_url
+                .get(doc.url.as_ref())
+                .copied()
+                .or_else(|| index.module_index.get(name.as_str()).copied())
+                .unwrap_or(0);
             if let Some(root) = doc.root() {
                 for stmt in &root.children {
                     if stmt.kind == StatementKind::Augment {
-                        pending_augs.push((Arc::from(name.as_str()), doc, stmt));
+                        pending_augs.push((Arc::from(name.as_str()), owner, doc, stmt));
                     } else if stmt.kind == StatementKind::Deviation {
                         let op = deviation_op(stmt);
                         if let Some(op) = op {
-                            pending_devs.push((Arc::from(name.as_str()), doc, stmt, op));
+                            pending_devs.push((Arc::from(name.as_str()), owner, doc, stmt, op));
                         }
                     }
                 }
@@ -1390,25 +1403,55 @@ fn expand_uses(
 fn find_node_at_path(
     index: &Index,
     records: &[ModuleRecord],
-    source_module: &str,
+    source_mi: usize,
     raw_path: &str,
 ) -> Option<(usize, NodeId)> {
+    let source = &records[source_mi];
     let segments: Vec<&str> = raw_path.split('/').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
         return None;
     }
-    let (module, first_local) = qualify(index, source_module, segments[0]);
-    let mi = index.module_index.get(module.as_ref()).copied()?;
-    let rec = &records[mi];
-    let start = rec
-        .top
-        .iter()
-        .copied()
-        .find(|&id| rec.nodes[id].name == first_local)?;
-    let mut current = start;
+    // Resolve the FIRST segment to a target module INSTANCE. An augment or
+    // deviation path binds prefixes through the declaring module's own import
+    // statements, so a pinned import (revision-date) targets that exact
+    // revision instance — not the canonical (highest-revision) one. Unprefixed
+    // paths target the declaring instance's own tree.
+    let (target_mi, mut current) = match segments[0].split_once(':') {
+        Some((prefix, local)) => {
+            let module: Arc<str> = source
+                .prefix_map
+                .get(prefix)
+                .map(|m| Arc::from(m.as_str()))
+                .or_else(|| {
+                    index
+                        .prefix_maps
+                        .get(source.name.as_str())
+                        .and_then(|pm| pm.get(prefix))
+                        .cloned()
+                })
+                .unwrap_or_else(|| Arc::from(prefix));
+            let mi = target_instance(index, records, source, module.as_ref(), prefix)?;
+            let rec = &records[mi];
+            let start = rec
+                .top
+                .iter()
+                .copied()
+                .find(|&id| rec.nodes[id].name == *local)?;
+            (mi, start)
+        }
+        None => {
+            let rec = &records[source_mi];
+            let start = rec
+                .top
+                .iter()
+                .copied()
+                .find(|&id| rec.nodes[id].name == segments[0])?;
+            (source_mi, start)
+        }
+    };
     for seg in &segments[1..] {
         let local = seg.rsplit(':').next().unwrap_or(seg);
-        let rec = &records[mi];
+        let rec = &records[target_mi];
         let next = rec.nodes[current]
             .children
             .iter()
@@ -1416,13 +1459,37 @@ fn find_node_at_path(
             .find(|&id| rec.nodes[id].name == *local && !rec.nodes[id].removed)?;
         current = next;
     }
-    Some((mi, current))
+    Some((target_mi, current))
+}
+
+/// The instance `source` binds `prefix` -> `module` to: its pinned import
+/// revision when one is declared and present, else the canonical instance.
+fn target_instance(
+    index: &Index,
+    records: &[ModuleRecord],
+    source: &ModuleRecord,
+    module: &str,
+    prefix: &str,
+) -> Option<usize> {
+    // The declaring instance's pinned import revision wins when present;
+    // canonical (highest revision) otherwise.
+    source
+        .imports
+        .iter()
+        .find(|i| i.prefix == prefix && i.module == module)
+        .and_then(|imp| imp.revision.as_ref())
+        .and_then(|rv| {
+            records
+                .iter()
+                .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
+        })
+        .or_else(|| index.module_index.get(module).copied())
 }
 
 fn apply_augments<'a>(
     index: &Index<'a>,
     records: &mut [ModuleRecord],
-    pending: &[(Arc<str>, &'a Yang, &'a Statement)],
+    pending: &[(Arc<str>, usize, &'a Yang, &'a Statement)],
     diags: &mut Vec<Diagnostic>,
 ) {
     // One augment may target a node that *another* augment installs (e.g. an
@@ -1434,7 +1501,7 @@ fn apply_augments<'a>(
     let mut applied = vec![false; pending.len()];
     loop {
         let mut any = false;
-        for (i, (source_module, file, stmt)) in pending.iter().enumerate() {
+        for (i, (source_module, source_mi, file, stmt)) in pending.iter().enumerate() {
             if applied[i] {
                 continue;
             }
@@ -1442,7 +1509,7 @@ fn apply_augments<'a>(
                 continue;
             };
             let path = arg.path();
-            let Some((mi, target_node)) = find_node_at_path(index, records, source_module, &path)
+            let Some((mi, target_node)) = find_node_at_path(index, records, *source_mi, &path)
             else {
                 continue;
             };
@@ -1488,7 +1555,7 @@ fn apply_augments<'a>(
     }
 
     // Whatever is still unresolved after the fixpoint genuinely has no target.
-    for (i, (_source_module, file, stmt)) in pending.iter().enumerate() {
+    for (i, (_source_module, _source_mi, file, stmt)) in pending.iter().enumerate() {
         if applied[i] {
             continue;
         }
@@ -1529,16 +1596,16 @@ fn deviation_op(stmt: &Statement) -> Option<DeviationOp> {
 fn apply_deviations<'a>(
     index: &Index<'a>,
     records: &mut [ModuleRecord],
-    pending: &[(Arc<str>, &'a Yang, &'a Statement, DeviationOp)],
+    pending: &[(Arc<str>, usize, &'a Yang, &'a Statement, DeviationOp)],
     diags: &mut Vec<Diagnostic>,
 ) {
-    for (source_module, file, stmt, op) in pending {
+    for (source_module, source_mi, file, stmt, op) in pending {
         let op = *op;
         let Some(arg) = stmt.arg.as_ref() else {
             continue;
         };
         let path = arg.path();
-        let Some((mi, node_id)) = find_node_at_path(index, records, source_module, &path) else {
+        let Some((mi, node_id)) = find_node_at_path(index, records, *source_mi, &path) else {
             diags.push(Diagnostic::error(
                 Some(file.url.clone()),
                 Some(arg.range.clone()),
