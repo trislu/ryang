@@ -406,98 +406,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     // Import cycles are forbidden by RFC 7950 §5.1 — report each one.
     detect_import_cycles(&to_compile, &content_of, &mut diags);
 
-    // ---- 3. symbol scan -------------------------------------------------
-    let mut index = Index {
-        syms: HashMap::new(),
-        pmaps_by_url: HashMap::new(),
-        prefix_maps: HashMap::new(),
-        module_index: HashMap::new(),
-        canon: HashMap::new(),
-        grouping_memo: Mutex::new(HashMap::new()),
-    };
-    // `module_index` (name -> position in `to_compile` = future `records`
-    // index) is filled up front: augment/deviation resolution consults it only
-    // after every record exists, and `records` is built in `to_compile` order.
-    for (i, m) in to_compile.iter().enumerate() {
-        let n = m.name.clone().unwrap();
-        let rev = m.revision.clone().unwrap_or_default();
-        match index.module_index.get(&n) {
-            Some(&j) => {
-                let cur = to_compile[j].revision.clone().unwrap_or_default();
-                if rev > cur {
-                    index.module_index.insert(n, i);
-                }
-            }
-            None => {
-                index.module_index.insert(n, i);
-            }
-        }
-    }
-
-    // Symbol/prefix scan is independent per module — run in parallel when the
-    // `parallel` feature is on. `map_par` preserves module order, so the
-    // resulting tables and downstream diagnostics are unchanged.
-    let scanned = map_par(&to_compile, |m| {
-        let name = m.name.clone().unwrap();
-        let content: Vec<&Yang> = std::iter::once(*m)
-            .chain(content_of.get(&name).cloned().unwrap_or_default())
-            .collect();
-
-        // prefix map: own + belongs-to prefixes -> self; imports -> module
-        let mut pmap: HashMap<String, Arc<str>> = HashMap::new();
-        for doc in &content {
-            if let Some(own) = &doc.own_prefix {
-                pmap.insert(own.clone(), Arc::from(name.as_str()));
-            }
-            for imp in &doc.imports {
-                pmap.insert(imp.prefix.clone(), Arc::from(imp.module.as_str()));
-            }
-        }
-
-        // symbols
-        let mut syms = SymTab {
-            groupings: HashMap::new(),
-            typedefs: HashMap::new(),
-            identities: HashMap::new(),
-            extensions: HashMap::new(),
-            features: HashMap::new(),
-        };
-        for doc in &content {
-            if let Some(root) = doc.root() {
-                collect_symbols(root, doc, &name, &mut syms);
-            }
-        }
-        (
-            m.url.to_string(),
-            name,
-            m.revision.clone().unwrap_or_default(),
-            pmap,
-            syms,
-        )
-    });
-    // Symbol tables are keyed per module INSTANCE (url): each revision of a
-    // name keeps its own symbols. `prefix_maps` keeps ONE canonical instance
-    // per name — the one with the highest revision — because all name-based
-    // reference resolution below is canonical-latest.
-    let mut canon: HashMap<String, (String, String)> = HashMap::new(); // name -> (rev, url)
-    for (url, name, rev, pmap, syms) in scanned {
-        index.syms.insert(url.clone(), syms);
-        index.pmaps_by_url.insert(url.clone(), pmap);
-        let better = match canon.get(&name) {
-            None => true,
-            Some((cur, _)) => rev > *cur,
-        };
-        if better {
-            canon.insert(name, (rev, url));
-        }
-    }
-    for (name, (_rev, url)) in canon {
-        index.canon.insert(name.clone(), url.clone());
-        index
-            .prefix_maps
-            .insert(name, index.pmaps_by_url[&url].clone());
-    }
-
+    let index = symbol_scan_phase(&to_compile, &content_of);
     // ---- 4+5. expand + apply augment/deviation --------------------------
     // Effective-tree expansion reads only `index`/`content_of` and is
     // independent per module — parallelized when the `parallel` feature is on,
@@ -1498,6 +1407,103 @@ fn target_instance(
                 .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
         })
         .or_else(|| index.module_index.get(module).copied())
+}
+
+/// The SYMBOL-SCAN phase (③): per module INSTANCE, collect the prefix map
+/// (own + belongs-to -> self, imports -> module) and top-level symbols, then
+/// freeze the canonical-latest instance per module name. Returns the read-only
+/// `Index` used by every later phase.
+fn symbol_scan_phase<'a>(
+    to_compile: &[&'a Yang],
+    content_of: &HashMap<String, Vec<&'a Yang>>,
+) -> Index<'a> {
+    let mut index = Index {
+        syms: HashMap::new(),
+        pmaps_by_url: HashMap::new(),
+        prefix_maps: HashMap::new(),
+        module_index: HashMap::new(),
+        canon: HashMap::new(),
+        grouping_memo: Mutex::new(HashMap::new()),
+    };
+    // `module_index` (name -> position in `to_compile` = future `records`
+    // index) is filled up front: augment/deviation resolution consults it only
+    // after every record exists, and `records` is built in `to_compile` order.
+    for (i, m) in to_compile.iter().enumerate() {
+        let n = m.name.clone().unwrap();
+        let rev = m.revision.clone().unwrap_or_default();
+        match index.module_index.get(&n) {
+            Some(&j) => {
+                let cur = to_compile[j].revision.clone().unwrap_or_default();
+                if rev > cur {
+                    index.module_index.insert(n, i);
+                }
+            }
+            None => {
+                index.module_index.insert(n, i);
+            }
+        }
+    }
+
+    // Symbol/prefix scan is independent per module — run in parallel when the
+    // `parallel` feature is on. `map_par` preserves module order.
+    let scanned = map_par(to_compile, |m| {
+        let name = m.name.clone().unwrap();
+        let content: Vec<&Yang> = std::iter::once(*m)
+            .chain(content_of.get(&name).cloned().unwrap_or_default())
+            .collect();
+
+        let mut pmap: HashMap<String, Arc<str>> = HashMap::new();
+        for doc in &content {
+            if let Some(own) = &doc.own_prefix {
+                pmap.insert(own.clone(), Arc::from(name.as_str()));
+            }
+            for imp in &doc.imports {
+                pmap.insert(imp.prefix.clone(), Arc::from(imp.module.as_str()));
+            }
+        }
+
+        let mut syms = SymTab {
+            groupings: HashMap::new(),
+            typedefs: HashMap::new(),
+            identities: HashMap::new(),
+            extensions: HashMap::new(),
+            features: HashMap::new(),
+        };
+        for doc in &content {
+            if let Some(root) = doc.root() {
+                collect_symbols(root, doc, &name, &mut syms);
+            }
+        }
+        (
+            m.url.to_string(),
+            name,
+            m.revision.clone().unwrap_or_default(),
+            pmap,
+            syms,
+        )
+    });
+    // Symbol tables are keyed per module INSTANCE (url); `prefix_maps` keeps
+    // ONE canonical instance per name (highest revision) because name-based
+    // reference resolution below is canonical-latest.
+    let mut canon: HashMap<String, (String, String)> = HashMap::new();
+    for (url, name, rev, pmap, syms) in scanned {
+        index.syms.insert(url.clone(), syms);
+        index.pmaps_by_url.insert(url.clone(), pmap);
+        let better = match canon.get(&name) {
+            None => true,
+            Some((cur, _)) => rev > *cur,
+        };
+        if better {
+            canon.insert(name, (rev, url));
+        }
+    }
+    for (name, (_rev, url)) in canon {
+        index.canon.insert(name.clone(), url.clone());
+        index
+            .prefix_maps
+            .insert(name, index.pmaps_by_url[&url].clone());
+    }
+    index
 }
 
 /// The EXPANSION phase (③): per module instance, expand the effective tree
