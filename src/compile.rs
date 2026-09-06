@@ -520,44 +520,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         records.push(rec);
     }
 
-    // Apply module-level augments after every base tree exists.
-    // Each augment/deviation is attributed to the module INSTANCE that
-    // physically declares it (its source file), so pinned import bindings of
-    // that instance drive target resolution.
-    let rec_by_url: HashMap<Arc<str>, usize> = records
-        .iter()
-        .enumerate()
-        .flat_map(|(i, r)| r.source_urls.iter().cloned().map(move |u| (u, i)))
-        .collect();
-    let mut pending_augs: Vec<(Arc<str>, usize, &Yang, &Statement)> = Vec::new();
-    let mut pending_devs: Vec<(Arc<str>, usize, &Yang, &Statement, DeviationOp)> = Vec::new();
-    for m in &to_compile {
-        let name = m.name.clone().unwrap();
-        let content: Vec<&Yang> = std::iter::once(*m)
-            .chain(content_of.get(&name).cloned().unwrap_or_default())
-            .collect();
-        for doc in &content {
-            let owner = rec_by_url
-                .get(doc.url.as_ref())
-                .copied()
-                .or_else(|| index.module_index.get(name.as_str()).copied())
-                .unwrap_or(0);
-            if let Some(root) = doc.root() {
-                for stmt in &root.children {
-                    if stmt.kind == StatementKind::Augment {
-                        pending_augs.push((Arc::from(name.as_str()), owner, doc, stmt));
-                    } else if stmt.kind == StatementKind::Deviation {
-                        let op = deviation_op(stmt);
-                        if let Some(op) = op {
-                            pending_devs.push((Arc::from(name.as_str()), owner, doc, stmt, op));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    apply_augments(&index, &mut records, &pending_augs, &mut diags);
-    apply_deviations(&index, &mut records, &pending_devs, &mut diags);
+    augment_deviation_phase(&index, &mut records, &to_compile, &content_of, &mut diags);
 
     // ---- 6. validation phase (③) ---------------------------------------
     // All post-expansion reference/structure checks run here as one explicit
@@ -1543,6 +1506,52 @@ fn target_instance(
                 .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
         })
         .or_else(|| index.module_index.get(module).copied())
+}
+
+/// The AUGMENT/DEVIATION phase (③): after every effective base tree exists,
+/// attribute each augment/deviation to the module instance that declares it
+/// and apply them (augment as a fixpoint, deviations after).
+fn augment_deviation_phase<'a>(
+    index: &Index<'a>,
+    records: &mut [ModuleRecord],
+    to_compile: &[&'a Yang],
+    content_of: &HashMap<String, Vec<&'a Yang>>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let rec_by_url: HashMap<Arc<str>, usize> = records
+        .iter()
+        .enumerate()
+        .flat_map(|(i, r)| r.source_urls.iter().cloned().map(move |u| (u, i)))
+        .collect();
+    let mut pending_augs: Vec<(Arc<str>, usize, &Yang, &Statement)> = Vec::new();
+    let mut pending_devs: Vec<(Arc<str>, usize, &Yang, &Statement, DeviationOp)> = Vec::new();
+    for m in to_compile {
+        let name = m.name.clone().unwrap();
+        let content: Vec<&Yang> = std::iter::once(*m)
+            .chain(content_of.get(&name).cloned().unwrap_or_default())
+            .collect();
+        for doc in &content {
+            let owner = rec_by_url
+                .get(doc.url.as_ref())
+                .copied()
+                .or_else(|| index.module_index.get(name.as_str()).copied())
+                .unwrap_or(0);
+            if let Some(root) = doc.root() {
+                for stmt in &root.children {
+                    if stmt.kind == StatementKind::Augment {
+                        pending_augs.push((Arc::from(name.as_str()), owner, doc, stmt));
+                    } else if stmt.kind == StatementKind::Deviation {
+                        let op = deviation_op(stmt);
+                        if let Some(op) = op {
+                            pending_devs.push((Arc::from(name.as_str()), owner, doc, stmt, op));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    apply_augments(index, records, &pending_augs, diags);
+    apply_deviations(index, records, &pending_devs, diags);
 }
 
 fn apply_augments<'a>(
