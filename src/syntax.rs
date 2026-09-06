@@ -10,7 +10,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Parser};
 
 use crate::text::Text;
 
@@ -454,9 +454,6 @@ pub struct Token {
 /// Result of parsing one source document.
 pub struct ParsedDoc {
     pub text: Text,
-    /// Raw CST, kept for future incremental reparse / caret queries.
-    #[allow(dead_code)]
-    pub tree: Tree,
     /// Root module/submodule statement, if the document is a YANG document.
     pub root: Option<Statement>,
     /// Comments in source order (the statement tree does not model them).
@@ -477,6 +474,10 @@ pub struct ParseError {
 pub(crate) fn parse(source: String) -> ParsedDoc {
     let text = Text::new(Arc::from(source.as_str()));
     let mut parser = new_parser();
+    // The raw CST is only needed while the views below are extracted; the
+    // Statement/comments/tokens/parse-error views retain everything later
+    // phases and the language server consume. Dropping the Tree here removes
+    // the largest per-document retention (a whole tree-sitter CST per doc).
     let tree = parser
         .parse(&source, None)
         .expect("tree-sitter parse yields a tree");
@@ -484,9 +485,9 @@ pub(crate) fn parse(source: String) -> ParsedDoc {
     let comments = collect_comments(tree.root_node(), &text);
     let tokens = collect_tokens(tree.root_node(), &text);
     let root = find_top_module(tree.root_node()).map(|n| build_statement(n, &text));
+    drop(tree);
     ParsedDoc {
         text,
-        tree,
         root,
         comments,
         tokens,
