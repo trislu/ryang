@@ -34,7 +34,7 @@ feature (2026-09-06):
 
 | tool | result |
 | --- | --- |
-| `inspect` | ~0.45–0.6 s; **1982** diagnostics (1646 errors / 336 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 836, unresolved-grouping 317, duplicate-module 278 (warnings), unresolved-typedef 193, parse-error 100, unresolved-import 85, unresolved-identity 85, not-a-yang-document 58, unresolved-prefix 18, key-leaf-not-found 9 |
+| `inspect` | ~0.45–0.6 s; **1975** diagnostics (1639 errors / 336 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 829, unresolved-grouping 317, duplicate-module 278 (warnings), unresolved-typedef 193, parse-error 100, unresolved-import 85, unresolved-identity 85, not-a-yang-document 58, unresolved-prefix 18, key-leaf-not-found 9 |
 | `perf` (single) | ~0.45–0.65 s wall / ~3.8–4.5 s CPU; RSS ~3 MB → **~721 MB peak** (VmHWM) |
 
 Treat these as a regression guard: if parse/compile/retention changes move time
@@ -67,6 +67,9 @@ by per-document tree-sitter CST retention — the current biggest lever.
   (unprefixed) references resolve against the owning module instance's OWN
   table only — a non-canonical revision is validated on its own terms and
   never sees another revision's typedefs (`021_typedef_own_revision.rs`).
+  Augment/deviation target paths are resolved from the DECLARING instance's
+  prefix map and import pins, so a pinned import augments the pinned
+  revision's tree (`022_augment_pinned_revision.rs`).
 - The local `[patch.crates-io]` override pointing `tree-sitter-yang` at
   `../tree-sitter-yang` is a TEMPORARY dev convenience — never commit it;
   remove it once the grammar fixes are version-bumped and published, then
