@@ -13,8 +13,9 @@
 //!   5. apply cross-module `augment`/`deviation` targets;
 //!   6. run the light validation pass (list keys, etc).
 
+use crate::fragment::{instantiate_run, snapshot_run};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::diag::{Diagnostic, DiagnosticCode, Location};
 use crate::schema::{
@@ -90,6 +91,12 @@ struct Index<'a> {
     module_index: HashMap<String, usize>,
     /// module name -> canonical instance url.
     canon: HashMap<String, String>,
+    /// Memoized grouping-instantiation fragments (PHASE ②/step-3): key
+    /// (module name, grouping name) of the CANONICAL instance, captured on the
+    /// first instantiation in a build and replayed (deep-copied, remapped)
+    /// for later ones. Arena-independent: every copy stamps its own site's
+    /// ns and root used_from.
+    grouping_memo: Mutex<HashMap<(String, String), crate::fragment::RunTemplate>>,
 }
 
 /// The scope in which statements are being expanded.
@@ -402,6 +409,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         prefix_maps: HashMap::new(),
         module_index: HashMap::new(),
         canon: HashMap::new(),
+        grouping_memo: Mutex::new(HashMap::new()),
     };
     // `module_index` (name -> position in `to_compile` = future `records`
     // index) is filled up front: augment/deviation resolution consults it only
@@ -1353,6 +1361,56 @@ fn expand_uses(
         ns: scope.ns.clone(),
         file: group.file,
     };
+
+    // refine / uses-augment children of a `uses` apply to its instantiated
+    // roots; shared by the walk and the memoized-replay paths.
+    let refine_and_augment = |index: &Index,
+                              arena: &mut Vec<SchemaNode>,
+                              diags: &mut Vec<Diagnostic>,
+                              scope: &Scope,
+                              created: &[NodeId],
+                              stack: &mut Vec<GroupKey>,
+                              stmt: &Statement| {
+        for c in &stmt.children {
+            match c.kind {
+                StatementKind::Refine => {
+                    apply_refine(index, arena, diags, scope, created, c, stack);
+                }
+                StatementKind::UsesAugment => {
+                    apply_uses_augment(index, arena, diags, scope, created, c, stack);
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Memoized replay: a (canonical module, grouping) instantiated earlier in
+    // this build is deep-copied from its captured fragment instead of being
+    // re-walked. The copy remaps links, stamps the site ns and root
+    // used_from; nested-uses used_from values were fixed at capture.
+    let memo_key = (module.to_string(), local.clone());
+    let replay = {
+        let memo = index
+            .grouping_memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        memo.get(&memo_key)
+            .map(|tmpl| instantiate_run(arena, tmpl, Some(parent), &scope.ns))
+    };
+    if let Some(created) = replay {
+        stack.pop();
+        let uses_loc = location_of(scope.file, stmt);
+        for id in &created {
+            if let Some(n) = arena.get_mut(*id) {
+                n.used_from = Some(uses_loc.clone());
+            }
+        }
+        refine_and_augment(index, arena, diags, scope, &created, stack, stmt);
+        return created;
+    }
+
+    let walk_start = arena.len() as NodeId;
+    let diags_before = diags.len();
     let mut created = Vec::new();
     for c in &group.stmt.children {
         if !is_body_child(&c.kind) {
@@ -1384,18 +1442,19 @@ fn expand_uses(
         }
     }
 
-    // refine / uses-augment children of this `uses`
-    for c in &stmt.children {
-        match c.kind {
-            StatementKind::Refine => {
-                apply_refine(index, arena, diags, scope, &created, c, stack);
-            }
-            StatementKind::UsesAugment => {
-                apply_uses_augment(index, arena, diags, scope, &created, c, stack);
-            }
-            _ => {}
-        }
+    // Memoize this fragment (the grouping-body walk only — taken BEFORE the
+    // site's refine/uses-augment children add their nodes) when the walk was
+    // diagnostic-free, so later instantiations replay instead of re-walking.
+    if diags.len() == diags_before {
+        let end = arena.len() as NodeId;
+        index
+            .grouping_memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(memo_key, snapshot_run(arena, walk_start, end));
     }
+
+    refine_and_augment(index, arena, diags, scope, &created, stack, stmt);
 
     created
 }
