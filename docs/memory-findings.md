@@ -61,6 +61,18 @@ candidate to measure; on-demand re-read/re-parse supplies text when a
 document is opened. Full-views compile (schema arenas for every module)
 remains fundamentally out of scope for one process.
 
+## No-source catalog experiment (full build then free)
+
+Second local experiment: keep header fields but ALSO drop the retained source
+after a FULL parse+build. Because the statement views were still constructed
+before being freed, the allocator's retained high-water dominates: RSS at 200
+real RFC files = 17 536 KB — HIGHER than the header+source-light path
+(10 740 KB) and 3× lower than full retention (49 408 KB). Conclusion: the
+catalog path must NOT build full statement/token views at all; it needs a
+LEAN HEADER SCANNER (parse the CST only down to the module header: name,
+revision, imports/includes, prefix, namespace) whose per-file footprint should
+be a few KB — the next prototype to implement and measure.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
