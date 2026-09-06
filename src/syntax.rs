@@ -472,6 +472,15 @@ pub struct ParseError {
 }
 
 pub(crate) fn parse(source: String) -> ParsedDoc {
+    parse_opt(source, false)
+}
+
+/// Like [`parse`], but with `light` set the Statement tree skips the pure-text
+/// statements (description/reference/organization/contact) and the token
+/// stream drops their quoted-string runs. Text-light documents are much
+/// lighter to retain while every schema/LSP feature behaves identically;
+/// default OFF (opt-in, e.g. giant-workspace catalog+closure serving).
+pub(crate) fn parse_opt(source: String, light: bool) -> ParsedDoc {
     let text = Text::new(Arc::from(source.as_str()));
     let mut parser = new_parser();
     // The raw CST is only needed while the views below are extracted; the
@@ -483,8 +492,16 @@ pub(crate) fn parse(source: String) -> ParsedDoc {
         .expect("tree-sitter parse yields a tree");
     let parse_errors = collect_errors(tree.root_node(), &text);
     let comments = collect_comments(tree.root_node(), &text);
-    let tokens = collect_tokens(tree.root_node(), &text);
-    let root = find_top_module(tree.root_node()).map(|n| build_statement(n, &text));
+    let excluded = if light {
+        text_statement_ranges(tree.root_node())
+    } else {
+        Vec::new()
+    };
+    let mut tokens = collect_tokens(tree.root_node(), &text);
+    if light {
+        tokens.retain(|t| !excluded.iter().any(|r| r.contains(&t.range.start)));
+    }
+    let root = find_top_module(tree.root_node()).map(|n| build_statement(n, &text, light));
     drop(tree);
     ParsedDoc {
         text,
@@ -513,7 +530,34 @@ fn find_top_module(node: Node) -> Option<Node> {
     }
 }
 
-fn build_statement(node: Node, text: &Text) -> Statement {
+/// CST statement kinds that carry only prose text (no schema semantics).
+fn is_text_statement_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "description_stmt" | "reference_stmt" | "organization_stmt" | "contact_stmt"
+    )
+}
+
+/// Byte ranges of every text-only statement in `node`'s subtree (for the
+/// text-light token filter).
+fn text_statement_ranges(node: Node) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    fn visit(n: Node, out: &mut Vec<std::ops::Range<usize>>) {
+        if is_text_statement_kind(n.kind()) {
+            out.push(n.start_byte()..n.end_byte());
+            return;
+        }
+        for i in 0..n.child_count() {
+            if let Some(c) = n.child(i as u32) {
+                visit(c, out);
+            }
+        }
+    }
+    visit(node, &mut out);
+    out
+}
+
+fn build_statement(node: Node, text: &Text, light: bool) -> Statement {
     let node_type = node.kind().to_string();
     let kind = StatementKind::from_node_type(&node_type)
         .unwrap_or(StatementKind::Unknown(node_type.clone()));
@@ -553,7 +597,8 @@ fn build_statement(node: Node, text: &Text) -> Statement {
     let child_stmts: Vec<Statement> = children
         .into_iter()
         .filter(|c| c.kind().ends_with("_stmt"))
-        .map(|c| build_statement(c, text))
+        .filter(|c| !(light && is_text_statement_kind(c.kind())))
+        .map(|c| build_statement(c, text, light))
         .collect();
 
     Statement {

@@ -7,6 +7,10 @@ and the `Library` snapshot.
 ## Build & test
 
 - Test **both** feature modes: `cargo test` and `cargo test --features parallel`.
+- `Repository::set_text_light(true)` opts into memory-light parsing
+  (description/reference/organization/contact dropped from the Statement tree
+  and their quoted runs from tokens; schema semantics unchanged) —
+  `027_text_light.rs`.
 - Keep `cargo fmt` clean and run clippy STRICTLY:
   `cargo +stable clippy --all-targets --all-features -- -D warnings`.
 - The `parallel` cargo feature gates rayon (bulk file ingest via

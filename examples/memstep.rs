@@ -33,17 +33,36 @@ fn main() {
     let mut compile_every: usize = 0; // 0 = never
     let mut start_at: usize = 0;
     let mut stop_at: Option<usize> = None;
+    let mut light = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--log-every" => log_every = args[i + 1].parse().unwrap_or(log_every),
-            "--sleep-ms" => sleep_ms = args[i + 1].parse().unwrap_or(0),
-            "--compile-every" => compile_every = args[i + 1].parse().unwrap_or(0),
-            "--start-at" => start_at = args[i + 1].parse().unwrap_or(0),
-            "--stop-at" => stop_at = Some(args[i + 1].parse().unwrap()),
-            _ => {}
+            "--text-light" => {
+                light = true;
+                i += 1;
+            }
+            "--log-every" => {
+                log_every = args[i + 1].parse().unwrap_or(log_every);
+                i += 2;
+            }
+            "--sleep-ms" => {
+                sleep_ms = args[i + 1].parse().unwrap_or(0);
+                i += 2;
+            }
+            "--compile-every" => {
+                compile_every = args[i + 1].parse().unwrap_or(0);
+                i += 2;
+            }
+            "--start-at" => {
+                start_at = args[i + 1].parse().unwrap_or(0);
+                i += 2;
+            }
+            "--stop-at" => {
+                stop_at = Some(args[i + 1].parse().unwrap());
+                i += 2;
+            }
+            _ => i += 1,
         }
-        i += 2;
     }
 
     let log_target = std::env::var("MEMSTEP_LOG").ok();
@@ -88,6 +107,10 @@ fn main() {
     ));
 
     let mut repo = yrepo::Repository::new();
+    if light {
+        repo.set_text_light(true);
+        log("[memstep] text_light=on");
+    }
     let mut source_bytes: u64 = 0;
     let started = Instant::now();
     for (idx, path) in files.iter().enumerate() {

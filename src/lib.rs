@@ -63,6 +63,7 @@ use crate::yang::Yang;
 pub struct Repository {
     docs: Vec<Yang>,
     by_url: HashMap<String, usize>,
+    text_light: bool,
 }
 
 impl Default for Repository {
@@ -76,7 +77,16 @@ impl Repository {
         Repository {
             docs: Vec::new(),
             by_url: HashMap::new(),
+            text_light: false,
         }
+    }
+
+    /// Opt-in memory-light parsing: text-only statements
+    /// (description/reference/organization/contact) are dropped from the
+    /// Statement tree and their quoted runs from the token stream. Schema
+    /// resolution and LSP semantics are unaffected; default OFF.
+    pub fn set_text_light(&mut self, light: bool) {
+        self.text_light = light;
     }
 
     /// Insert or replace the document at `url` with `source` and parse it.
@@ -85,7 +95,7 @@ impl Repository {
     /// [`Diagnostic`]s.
     pub fn upsert(&mut self, url: impl Into<String>, source: impl Into<String>) {
         let url = url.into();
-        let parsed = Yang::new(Arc::from(url.as_str()), source.into());
+        let parsed = Yang::new_opt(Arc::from(url.as_str()), source.into(), self.text_light);
         self.commit(url, parsed);
     }
 
@@ -116,9 +126,13 @@ impl Repository {
             .collect();
         // Read + parse off-thread (feature `parallel`); results stay in `items`
         // order, with unreadable files dropped in place.
+        let light = self.text_light;
         let parsed = crate::compile::map_par(&items, |(url, path)| {
             let source = std::fs::read_to_string(path).ok()?;
-            Some((url.clone(), Yang::new(Arc::from(url.as_str()), source)))
+            Some((
+                url.clone(),
+                Yang::new_opt(Arc::from(url.as_str()), source, light),
+            ))
         });
         let mut committed = 0usize;
         for (url, doc) in parsed.into_iter().flatten() {

@@ -56,7 +56,18 @@ pub struct Yang {
 
 impl Yang {
     pub(crate) fn new(url: Arc<str>, source: String) -> Yang {
-        let parsed = syntax::parse(source);
+        Self::new_opt(url, source, false)
+    }
+
+    /// Like [`Yang::new`], but with `light` the Statement tree skips
+    /// text-only statements and tokens drop their quoted runs (see
+    /// `syntax::parse_opt`). Opt-in for memory-light serving.
+    pub(crate) fn new_opt(url: Arc<str>, source: String, light: bool) -> Yang {
+        let parsed = if light {
+            syntax::parse_opt(source, true)
+        } else {
+            syntax::parse(source)
+        };
         let header = extract_header(parsed.root.as_ref());
         let parse_errors = parsed.parse_errors.clone();
         Yang {

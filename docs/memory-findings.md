@@ -99,6 +99,17 @@ Closure-scope compile prototype (`examples/closure.rs`): 20 real roots →
 41-file closure parsed+compiled at 22.5 MB RSS (vs 486-file full retention),
 validating the serve-by-closure model.
 
+## Text-light parse mode (implemented, opt-in)
+
+`Repository::set_text_light(true)` drops description/reference/organization/
+contact from the Statement tree and their quoted runs from the token stream;
+schema resolution and LSP semantics are identical (tests 027_text_light).
+Real RFC subset memstep at 200 files: 41 344 KB vs 49 408 KB full (**−16%
+ingest retention**), in addition to fewer statement nodes. Effect is
+meaningful but bounded: remaining token/statement structure and full-parse
+costs still dominate — text-light belongs in the serving path (catalog +
+closure + light) rather than standing alone.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
