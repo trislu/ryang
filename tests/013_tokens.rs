@@ -44,10 +44,10 @@ fn test_token_stream_kinds() {
     assert!(has(TokenKind::String, "\"bar\""));
     // "8080" lives *inside* a string — it must not also be a number
     assert!(!has(TokenKind::Number, "8080"));
+    // a quoted `range` argument is one opaque string (RFC 7950 quoted-string)
+    assert!(has(TokenKind::String, "\"1..10\""));
 
-    // unquoted numbers in `range` and `fraction-digits`
-    assert!(has(TokenKind::Number, "1"));
-    assert!(has(TokenKind::Number, "10"));
+    // unquoted numbers (fraction-digits) still tokenize as numbers
     assert!(has(TokenKind::Number, "2"));
 
     // booleans and the `+` concat operator
@@ -112,7 +112,7 @@ fn test_token_text_set_is_stable() {
         "true",
         "+",
         "\"foo\"",
-        "10",
+        "\"1..10\"",
         "\"8080\"",
     ] {
         assert!(texts.contains(expected), "missing token text {expected:?}");
