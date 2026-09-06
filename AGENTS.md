@@ -40,6 +40,11 @@ model for serving very large trees.
 `examples/closure.rs` parses+compiles only the closure (imports + includes)
 of N root modules over a `CatalogIndex` via `yrepo::build_closure_repository`
 — the serving-by-closure API (RSS/time logs, optional `--text-light`).
+`examples/serveperf.rs` measures the serving pipeline standalone: parallel
+batch catalog scan (`CatalogIndex::scan_many_files`) over a whole tree, then
+materialize + compile the open closure of N roots (`build_closure_repository`,
+text-light ON) — two-phase wall/RSS/VmHWM logs, `--limit K` for stepwise scale
+curves, `--root-name` for a specific real module.
 `examples/memcomp.rs` is the non-parallel retention DECOMPOSITION tool: after
 sequentially ingesting a tree it totals statements, owned argument-string
 bytes, token-string bytes and comments per document, for estimating string

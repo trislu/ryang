@@ -8,6 +8,7 @@
 //! dropped) and copies out the header fields. Only the strings on the
 //! returned `Catalog` are retained.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The light per-document catalog record.
@@ -98,6 +99,36 @@ impl CatalogIndex {
         self.entries.is_empty()
     }
 
+    /// Read and catalog every file path in `paths` (a whole tree handed as
+    /// one batch, mirroring `Repository::upsert_many_files`): files are read
+    /// *and* transient-parsed off-thread when the `parallel` feature is on
+    /// (a plain sequential loop otherwise), and each worker keeps only its
+    /// in-flight file, so scan memory stays flat however large the tree.
+    /// Url of an entry is its path string (callers that need canonical file
+    /// urls convert before passing paths). Returns how many files were
+    /// cataloged (unreadable files are skipped, never an error).
+    pub fn scan_many_files<I, P>(&mut self, paths: I) -> usize
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .map(|p| p.as_ref().to_path_buf())
+            .collect();
+        let scanned: Vec<Option<Catalog>> = crate::compile::map_par(&paths, |p| {
+            std::fs::read_to_string(p)
+                .ok()
+                .map(|text| Catalog::scan(p.to_string_lossy().to_string(), text))
+        });
+        let mut n = 0usize;
+        for record in scanned.into_iter().flatten() {
+            self.push(record);
+            n += 1;
+        }
+        n
+    }
+
     /// The catalog entry whose url matches `url`.
     pub fn of_url(&self, url: &str) -> Option<&Catalog> {
         self.by_url.get(url).map(|&i| &self.entries[i])
@@ -136,6 +167,13 @@ impl CatalogIndex {
             best(idx)
         };
         pick.map(|i| &self.entries[i])
+    }
+
+    /// Every distinct module name in the index, sorted (deterministic).
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.by_name.keys().cloned().collect();
+        names.sort();
+        names
     }
 }
 
@@ -327,5 +365,37 @@ mod tests {
             outcome.library.is_some(),
             "dangling import is a diagnostic, not a hard failure"
         );
+    }
+
+    #[test]
+    fn scan_many_files_batch_catalogs_disk_tree() {
+        use std::fs;
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!(
+            "yrepo-catalog-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (0..3)
+            .map(|i| {
+                let p = dir.join(format!("m{i}.yang"));
+                fs::write(
+                    &p,
+                    format!("module m{i} {{ namespace \"urn:m{i}\"; prefix m{i}; leaf l {{ type string; }} }}"),
+                )
+                .unwrap();
+                p
+            })
+            .collect();
+        let mut index = CatalogIndex::default();
+        let n = index.scan_many_files(&files);
+        assert_eq!(n, 3);
+        assert!(index.canonical("m1").is_some());
+        assert!(index.of_url(&files[0].to_string_lossy()).is_some());
+        fs::remove_dir_all(&dir).ok();
     }
 }
