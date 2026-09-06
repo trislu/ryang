@@ -296,11 +296,17 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     for y in &module_docs {
         let key = (y.name.clone().unwrap(), y.revision.clone());
         if seen.insert(key.clone(), ()).is_some() {
-            diags.push(Diagnostic::error(
+            // Visible but non-blocking (like pyang, which silently dedupes):
+            // a second copy of the same (name, revision) is skipped and the
+            // user is told, without turning the workspace red.
+            diags.push(Diagnostic::warning(
                 Some(y.url.clone()),
                 root_range(y),
                 DiagnosticCode::DuplicateModule,
-                format!("duplicate module '{}'", key.0),
+                format!(
+                    "duplicate module '{}' (same name and revision); this copy is ignored",
+                    key.0
+                ),
             ));
             continue;
         }
