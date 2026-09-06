@@ -564,6 +564,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     diags.extend(list_diags);
     diags.extend(sym_diags);
     diags.extend(validate_duplicate_nodes(&records));
+    diags.extend(validate_leafref_paths(&records));
 
     // ---- submodule records ---------------------------------------------
     let mut submodules = Vec::new();
@@ -2089,6 +2090,183 @@ fn keyless_list_exempt(nodes: &[SchemaNode], list_id: NodeId) -> bool {
 /// multi-revision coexistence snapshot merges several revisions of one
 /// augmenting module into one canonical target tree, which double-books
 /// children that are single-authored per revision.
+/// RFC 7950 §9.9: a `leafref` `path` must name an existing schema node.
+/// Resolves ABSOLUTE paths (the common cross-module form), stripping
+/// predicates (`[…]`) segment-wise; a path whose prefix or any segment does
+/// not resolve is reported. Relative paths (`../`, `./`) depend on the
+/// instantiation context and are handled by the leafref engine (not reported
+/// here).
+fn validate_leafref_paths(records: &[ModuleRecord]) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    // report each AUTHORED path once, even when a grouping instantiating it
+    // is used many times (each copy would otherwise duplicate the diagnostic)
+    let mut reported: std::collections::HashSet<(String, usize, usize)> =
+        std::collections::HashSet::new();
+    let mut by_name: HashMap<&str, usize> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        match by_name.get(r.name.as_str()) {
+            None => {
+                by_name.insert(r.name.as_str(), i);
+            }
+            Some(&j) => {
+                let rev = r.revision.as_deref().unwrap_or("");
+                let cur = records[j].revision.as_deref().unwrap_or("");
+                if rev > cur {
+                    by_name.insert(r.name.as_str(), i);
+                }
+            }
+        }
+    }
+    for rec in records {
+        for n in &rec.nodes {
+            if n.type_name.as_deref() != Some("leafref") {
+                continue;
+            }
+            let Some(p) = n.facets.path.clone() else {
+                continue;
+            };
+            let p = p.trim();
+            if p.is_empty() || !p.starts_with('/') {
+                // relative / non-absolute paths are the engine's job
+                continue;
+            }
+            // The path was authored where the leafref STATEMENT is defined —
+            // the origin module of the node (a grouping-born node keeps the
+            // grouping module's prefixes), not the arena record it lands in.
+            let Some(&oi) = by_name.get(n.origin_module.as_ref()) else {
+                continue;
+            };
+            let origin = &records[oi];
+            if leafref_abs_resolves(records, &by_name, origin, p) {
+                continue;
+            }
+            let key = (
+                n.defining.url.to_string(),
+                n.defining.range.start,
+                n.defining.range.end,
+            );
+            if !reported.insert(key) {
+                continue;
+            }
+            let under = schema_path(&rec.nodes, n.parent.unwrap_or(0));
+            diags.push(Diagnostic::error(
+                Some(n.defining.url.clone()),
+                Some(n.defining.range.clone()),
+                DiagnosticCode::UnresolvedLeafref,
+                format!("leafref path '{p}' under '{under}' does not resolve"),
+            ));
+        }
+    }
+    diags
+}
+
+/// Split a path on '/' while ignoring separators inside quoted strings or
+/// predicate brackets (a predicate may contain '/' inside a quoted value, and
+/// `current()/../x` after '=').
+fn path_steps(path: &str) -> Vec<String> {
+    let b = path.as_bytes();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: u8 = 0; // 0 = not in a quoted string
+    let mut depth = 0usize; // predicate bracket depth
+    for &c in b {
+        let ch = c as char;
+        if quote != 0 {
+            cur.push(ch);
+            if c == quote {
+                quote = 0;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => {
+                quote = c;
+                cur.push(ch);
+            }
+            b'[' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            b']' if depth > 0 => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            b'/' if depth == 0 => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Remove predicate content (`[…]`) from one path step, leaving its name.
+fn step_name(step: &str) -> &str {
+    match step.find('[') {
+        Some(i) => &step[..i],
+        None => step,
+    }
+}
+
+fn leafref_abs_resolves(
+    records: &[ModuleRecord],
+    by_name: &HashMap<&str, usize>,
+    owner: &ModuleRecord,
+    path: &str,
+) -> bool {
+    let cleaned: Vec<String> = path_steps(path)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        return false;
+    }
+    let first = &cleaned[0];
+    let first: &str = first;
+    // First segment: prefix -> module via the owner instance's prefix map
+    // (falls back to the owner module itself when unprefixed).
+    let module = match first.split_once(':') {
+        Some((prefix, _)) => match owner.prefix_map.get(prefix) {
+            Some(m) => m.clone(),
+            None => return false,
+        },
+        None => owner.name.clone(),
+    };
+    let Some(&mi) = by_name.get(module.as_str()) else {
+        return false;
+    };
+    let rec = &records[mi];
+    let first_local = step_name(first).rsplit(':').next().unwrap_or(first);
+    let mut cur = match rec
+        .top
+        .iter()
+        .copied()
+        .find(|&id| rec.nodes[id].name == first_local)
+    {
+        Some(id) => id,
+        None => return false,
+    };
+    for seg in &cleaned[1..] {
+        let local = step_name(seg).rsplit(':').next().unwrap_or(seg);
+        let node = &rec.nodes[cur];
+        match node
+            .children
+            .iter()
+            .copied()
+            .find(|&id| rec.nodes[id].name == *local)
+        {
+            Some(id) => cur = id,
+            None => return false,
+        }
+    }
+    true
+}
+
 fn validate_duplicate_nodes(records: &[ModuleRecord]) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for rec in records {

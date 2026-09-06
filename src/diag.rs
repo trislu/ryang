@@ -56,6 +56,7 @@ pub enum DiagnosticCode {
     InvalidKey,
     ListWithoutKey,
     DuplicateNode,
+    UnresolvedLeafref,
 }
 
 impl DiagnosticCode {
@@ -80,6 +81,7 @@ impl DiagnosticCode {
             InvalidKey => "invalid-key",
             ListWithoutKey => "list-without-key",
             DuplicateNode => "duplicate-node",
+            UnresolvedLeafref => "unresolved-leafref-path",
         }
     }
 }
