@@ -34,7 +34,7 @@ feature (2026-09-06):
 
 | tool | result |
 | --- | --- |
-| `inspect` | ~0.45–0.6 s; **1440** diagnostics (1119 errors / 321 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 447, unresolved-grouping 301, duplicate-module 278 (warnings), unresolved-typedef 193, unresolved-identity 18, parse-error 58, duplicate-node 23, unresolved-import 47, not-a-yang-document 39, unresolved-prefix 22, key-leaf-not-found 9, list-without-key 4 (warnings) |
+| `inspect` | ~0.45–0.6 s; **1540** diagnostics (1219 errors / 321 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 447, unresolved-grouping 301, duplicate-module 278 (warnings), unresolved-typedef 193, unresolved-identity 18, parse-error 58, duplicate-node 23, unresolved-leafref-path 100, unresolved-import 47, not-a-yang-document 39, unresolved-prefix 22, key-leaf-not-found 9, list-without-key 4 (warnings) |
 | `perf` (single) | ~0.45–0.65 s wall / ~3.8–4.5 s CPU; RSS ~3 MB → **~721 MB peak** (VmHWM) |
 
 Treat these as a regression guard: if parse/compile/retention changes move time
@@ -43,6 +43,10 @@ by per-document tree-sitter CST retention — the current biggest lever.
 
 ## Conventions
 
+- Diagnostics: dangling `leafref` absolute `path` expressions are flagged
+  (predicates stripped segment-wise, prefixes resolved via the origin module;
+  reported once per authored site; relative paths deferred to the leafref
+  engine — `025_leafref_path.rs`).
 - Diagnostics: duplicate sibling node names are flagged only for the
   record's OWN module and same physical file (authoring mistakes); cross-module
   augment collisions and multi-revision merge duplicates are not reported
