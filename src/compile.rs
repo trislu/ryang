@@ -242,12 +242,28 @@ fn fold_submodules<'a>(
     }
 }
 
+/// True when the document's first non-whitespace character is `<` — i.e. the
+/// file is HTML/XML (or similar markup), never a YANG document (YANG starts
+/// with the `module`/`submodule` keyword, possibly after comments).
+fn starts_with_angle(y: &Yang) -> bool {
+    let src = y.source().strip_prefix('\u{feff}').unwrap_or(y.source());
+    src.chars().find(|c| !c.is_whitespace()) == Some('<')
+}
+
 pub fn build(docs: &[&Yang]) -> BuildOutcome {
     let mut diags = Vec::new();
 
     // ---- 1. classify ----------------------------------------------------
     for y in docs {
         for e in &y.parse_errors {
+            // A document whose first non-whitespace byte is '<' cannot be a
+            // YANG module/submodule (those start with the `module`/`submodule`
+            // keyword, possibly after comments). Such files (e.g. HTML/XML
+            // saved as `*.yang`) are reported once as `not-a-yang-document`
+            // below; the whole-file parse error adds only noise.
+            if starts_with_angle(y) {
+                continue;
+            }
             diags.push(Diagnostic::error(
                 Some(y.url.clone()),
                 Some(e.range.clone()),
