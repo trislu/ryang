@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-06
+
+### Added
+
+- **Optional parallel parsing & compilation** behind the new `parallel` cargo
+  feature (off by default): `Repository::upsert_many_files((url, path)…)`
+  reads *and* parses a batch of files off-thread (one file in memory at a
+  time) — for LSP workspace scans etc. — and the per-module phases of
+  `compile` (symbol scan, effective-tree expansion, light validation) also run
+  in parallel. Every parallel path preserves document/module order, so the
+  resulting `Library` and diagnostics are identical to the sequential
+  pipeline.
+
+### Changed
+
+- Batch document ingest is now **file-based only**
+  (`Repository::upsert_many_files`). The in-memory
+  `upsert_many((url, source)…)` batch helper existed only in unreleased
+  development and was dropped before release; it never shipped in a published
+  version, so this is **not** a breaking change. In-memory updates remain
+  single-document via `Repository::upsert`.
+
 ## [0.2.0] - 2026-09-05
 
 ### Added
