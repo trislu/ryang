@@ -7,7 +7,8 @@ and the `Library` snapshot.
 ## Build & test
 
 - Test **both** feature modes: `cargo test` and `cargo test --features parallel`.
-- Keep `cargo fmt` and `clippy` clean.
+- Keep `cargo fmt` clean and run clippy STRICTLY:
+  `cargo +stable clippy --all-targets --all-features -- -D warnings`.
 - The `parallel` cargo feature gates rayon (bulk file ingest via
   `upsert_many_files`, per-module compile phases). Off by default to keep the
   published dependency tree lean.
