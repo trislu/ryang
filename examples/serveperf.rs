@@ -14,6 +14,14 @@
 //! `--limit K` scans only the first K walked files (sorted), for stepwise
 //! scale curves (each run is a fresh process, so RSS at a limit is that
 //! tree's own footprint, like `catmem --stop-at`).
+//!
+//! RSS caveat: with the `parallel` feature the phase-1 scan runs 16+ parsers
+//! at once, so the reported RSS/VmHWM is dominated by the TRANSIENT parse
+//! high-water (allocator does not return freed CST arenas) and varies run to
+//! run — it is NOT the retained catalog footprint. Retained footprint is best
+//! measured sequentially (`catmem`; the resident language server scans
+//! sequentially for this reason). Use serveperf for wall-time and closure
+//! numbers; read retention from sequential runs.
 
 use std::path::Path;
 use std::time::Instant;
