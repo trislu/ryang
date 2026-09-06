@@ -21,12 +21,24 @@ pub struct Catalog {
     pub revision: Option<String>,
     /// The module's own prefix (or, for a submodule, the belongs-to prefix).
     pub prefix: Option<String>,
-    /// Imported `(module, prefix)` pairs.
-    pub imports: Vec<(String, String)>,
+    /// Imported modules, each with the import's local prefix and an optional
+    /// `revision-date` pin (resolution must honor the pin when present).
+    pub imports: Vec<CatalogImport>,
     /// Included submodule names.
     pub includes: Vec<String>,
     /// True when the document parsed without a whole-file collapse.
     pub parse_ok: bool,
+}
+
+/// One top-level `import` in a cataloged module.
+#[derive(Debug, Clone)]
+pub struct CatalogImport {
+    /// Imported module name.
+    pub module: String,
+    /// The import's local prefix.
+    pub prefix: String,
+    /// `revision-date` pin, if the import statement pins one.
+    pub revision: Option<String>,
 }
 
 impl Catalog {
@@ -45,7 +57,11 @@ impl Catalog {
             imports: yang
                 .imports
                 .iter()
-                .map(|i| (i.module.clone(), i.prefix.clone()))
+                .map(|i| CatalogImport {
+                    module: i.module.clone(),
+                    prefix: i.prefix.clone(),
+                    revision: i.revision.clone(),
+                })
                 .collect(),
             includes: yang.includes.iter().map(|i| i.name.clone()).collect(),
             parse_ok,
@@ -90,16 +106,36 @@ impl CatalogIndex {
     /// The highest-revision entry named `name` (canonical-latest; parse-clean
     /// wins among equal revisions).
     pub fn canonical(&self, name: &str) -> Option<&Catalog> {
+        self.resolve(name, None)
+    }
+
+    /// Resolve `name` the way a reference does: when `revision` is given and
+    /// an entry with that exact (name, revision-date) exists, prefer it
+    /// (parse-clean first among equal copies); otherwise fall back to the
+    /// canonical-latest entry — mirroring `compile`, where an import pinned
+    /// with `revision-date` resolves to that exact revision first.
+    pub fn resolve(&self, name: &str, revision: Option<&str>) -> Option<&Catalog> {
         let idx = self.by_name.get(name)?;
-        idx.iter()
-            .max_by(|&&a, &&b| {
+        let best = |cands: &[usize]| {
+            cands.iter().copied().max_by(|&a, &b| {
                 let a = &self.entries[a];
                 let b = &self.entries[b];
                 let ra = a.revision.clone().unwrap_or_default();
                 let rb = b.revision.clone().unwrap_or_default();
                 ra.cmp(&rb).then_with(|| b.parse_ok.cmp(&a.parse_ok))
             })
-            .map(|&i| &self.entries[i])
+        };
+        let pick = if let Some(rev) = revision {
+            let pinned: Vec<usize> = idx
+                .iter()
+                .copied()
+                .filter(|&i| self.entries[i].revision.as_deref() == Some(rev))
+                .collect();
+            best(&pinned).or_else(|| best(idx))
+        } else {
+            best(idx)
+        };
+        pick.map(|i| &self.entries[i])
     }
 }
 
@@ -131,9 +167,9 @@ pub fn build_closure_repository(
             continue; // file missing on disk: open doc may still supply it later
         };
         repo.upsert(entry.url.clone().to_string(), source);
-        for (module, _) in &entry.imports {
-            if !seen.contains(module) {
-                queue.push(module.clone());
+        for imp in &entry.imports {
+            if !seen.contains(&imp.module) {
+                queue.push(imp.module.clone());
             }
         }
         for sub in &entry.includes {
@@ -185,6 +221,62 @@ mod tests {
                 .as_deref(),
             Some("2019-01-01")
         );
+    }
+
+    #[test]
+    fn resolve_prefers_pinned_revision_then_falls_back_to_canonical() {
+        let (index, _) = scan_set(&[
+            (
+                "/m/m.yang",
+                "module m { namespace \"urn:m\"; prefix m; revision 2021-01-01; }",
+            ),
+            (
+                "/m/m-old.yang",
+                "module m { namespace \"urn:m\"; prefix m; revision 2019-01-01; }",
+            ),
+            (
+                "/m/m-mid.yang",
+                "module m { namespace \"urn:m\"; prefix m; revision 2020-01-01; }",
+            ),
+        ]);
+        // Unpinned -> highest revision.
+        assert_eq!(
+            index.resolve("m", None).expect("canonical").url.as_ref(),
+            "/m/m.yang"
+        );
+        // Pinned to an existing revision -> that exact file.
+        assert_eq!(
+            index
+                .resolve("m", Some("2019-01-01"))
+                .expect("pinned")
+                .url
+                .as_ref(),
+            "/m/m-old.yang"
+        );
+        // Pinned to a revision absent from the catalog -> canonical fallback.
+        assert_eq!(
+            index
+                .resolve("m", Some("2000-01-01"))
+                .expect("fallback")
+                .url
+                .as_ref(),
+            "/m/m.yang"
+        );
+        assert!(index.resolve("ghost", None).is_none());
+    }
+
+    #[test]
+    fn catalog_keeps_import_pins() {
+        let (index, _) = scan_set(&[(
+            "/r/p.yang",
+            "module p { namespace \"urn:p\"; prefix p;\n  import q { prefix q; revision-date 2019-01-01; }\n  import r { prefix r; }\n}",
+        )]);
+        let entry = index.of_url("/r/p.yang").expect("p indexed");
+        assert_eq!(entry.imports.len(), 2);
+        assert_eq!(entry.imports[0].module, "q");
+        assert_eq!(entry.imports[0].revision.as_deref(), Some("2019-01-01"));
+        assert_eq!(entry.imports[1].module, "r");
+        assert_eq!(entry.imports[1].revision, None);
     }
 
     #[test]
