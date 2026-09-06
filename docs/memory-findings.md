@@ -48,6 +48,19 @@ string duplication than the synthetic sets, so the rope-range redesign's
 ceiling on realistic trees is above the synthetic estimate (string bytes +
 one heap allocation per argument and per token).
 
+## Catalog-only retention experiment (views dropped, header+source kept)
+
+Local temporary patch (parse returns no statement/token/comment views), same
+200 real RFC files: RSS at 200 files = 10 740 KB vs 49 408 KB with full
+views → catalog-only retention is ≈ **22%** of full-parse retention
+(**−78%**, ~34 KB/file vs ~235 KB/file; still ≈1.7× source because the full
+source text is retained per document). Even ~34 KB/file over a 163k tree
+(~5.5 GB) is too large to hold in full, so a catalog variant that also drops
+the retained source (only extracted header fields per document) is the next
+candidate to measure; on-demand re-read/re-parse supplies text when a
+document is opened. Full-views compile (schema arenas for every module)
+remains fundamentally out of scope for one process.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
