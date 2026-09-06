@@ -70,6 +70,7 @@ impl NodeKind {
 }
 
 /// One node of the effective schema tree.
+#[derive(Clone)]
 pub struct SchemaNode {
     pub(crate) kind: NodeKind,
     pub(crate) name: String,
