@@ -1663,19 +1663,14 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
     // Resolve an import prefix to the record instance this module actually
     // pinned (import revision-date); fall back to canonical-latest.
     let pick = |rec: &ModuleRecord, module: &str, prefix: &str| -> Option<usize> {
-        if let Some(imp) = rec
-            .imports
+        // Pinned import revision-date wins; fall back to canonical-latest.
+        rec.imports
             .iter()
             .find(|i| i.prefix == prefix && i.module == module)
-        {
-            if let Some(rv) = &imp.revision {
-                let key = (module.to_string(), rv.clone());
-                if let Some(&i2) = rev_idx.get(&key) {
-                    return Some(i2);
-                }
-            }
-        }
-        by_name.get(module).copied()
+            .and_then(|imp| imp.revision.as_ref())
+            .and_then(|rv| rev_idx.get(&(module.to_string(), rv.clone())))
+            .copied()
+            .or_else(|| by_name.get(module).copied())
     };
 
     // typedef -> its base type
