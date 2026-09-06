@@ -563,6 +563,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         join_par(|| validate_lists(&records), || validate_symbols(&records));
     diags.extend(list_diags);
     diags.extend(sym_diags);
+    diags.extend(validate_duplicate_nodes(&records));
 
     // ---- submodule records ---------------------------------------------
     let mut submodules = Vec::new();
@@ -2072,6 +2073,75 @@ fn keyless_list_exempt(nodes: &[SchemaNode], list_id: NodeId) -> bool {
         // `config true` is explicit → judge.
         (_, Some(true)) => false,
     }
+}
+
+/// RFC 7950 §7: the data nodes (and choice/case wrappers) under one schema
+/// node must have distinct names. Two nodes with the same name under the same
+/// parent make hover/goto/completion ambiguous, so this is an error. Names
+/// under different `case` branches of a `choice` live under different parents
+/// and are exempt.
+///
+/// Scoped narrowly to unambiguous authoring mistakes: duplicates of the
+/// record's OWN module, DEFINED IN THE SAME PHYSICAL FILE (two nodes written
+/// under one parent, or one grouping instantiated twice under one parent).
+/// Everything else is deliberately NOT reported: cross-module augment
+/// collisions are a widespread ecosystem pattern, and this repository's
+/// multi-revision coexistence snapshot merges several revisions of one
+/// augmenting module into one canonical target tree, which double-books
+/// children that are single-authored per revision.
+fn validate_duplicate_nodes(records: &[ModuleRecord]) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for rec in records {
+        let nodes = &rec.nodes;
+        let rec_name = rec.name.as_str();
+        let mut check_children = |parent: Option<NodeId>, kids: &[NodeId]| {
+            let mut seen: HashMap<&str, NodeId> = HashMap::new();
+            for &c in kids {
+                let n = &nodes[c];
+                if n.removed {
+                    continue;
+                }
+                match seen.get(n.name.as_str()) {
+                    None => {
+                        seen.insert(n.name.as_str(), c);
+                    }
+                    Some(&first) => {
+                        let first_n = &nodes[first];
+                        let own = first_n.origin_module.as_ref() == rec_name
+                            && n.origin_module.as_ref() == rec_name;
+                        let same_file = first_n.defining.url == n.defining.url;
+                        if !own || !same_file {
+                            // cross-instance / cross-file (augment) bookkeeping
+                            // or multi-revision merge: skipped by design
+                            continue;
+                        }
+                        let under = match parent {
+                            Some(p) => schema_path(nodes, p),
+                            None => "/".to_string(),
+                        };
+                        let first_line = first_n.defining.range.start.checked_add(1).unwrap_or(0);
+                        diags.push(Diagnostic::error(
+                            Some(n.defining.url.clone()),
+                            Some(n.defining.range.clone()),
+                            DiagnosticCode::DuplicateNode,
+                            format!(
+                                "duplicate node name '{}' under '{}' (first defined at line {})",
+                                n.name, under, first_line
+                            ),
+                        ));
+                    }
+                }
+            }
+        };
+        check_children(None, &rec.top);
+        for (p, node) in nodes.iter().enumerate() {
+            if !node.children.is_empty() {
+                let kids = node.children.clone();
+                check_children(Some(p as NodeId), &kids);
+            }
+        }
+    }
+    diags
 }
 
 fn validate_lists(records: &[ModuleRecord]) -> Vec<Diagnostic> {

@@ -55,6 +55,7 @@ pub enum DiagnosticCode {
     KeyLeafNotFound,
     InvalidKey,
     ListWithoutKey,
+    DuplicateNode,
 }
 
 impl DiagnosticCode {
@@ -78,6 +79,7 @@ impl DiagnosticCode {
             KeyLeafNotFound => "key-leaf-not-found",
             InvalidKey => "invalid-key",
             ListWithoutKey => "list-without-key",
+            DuplicateNode => "duplicate-node",
         }
     }
 }
