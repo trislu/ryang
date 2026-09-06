@@ -95,9 +95,11 @@ by per-document tree-sitter CST retention — the current biggest lever.
   not-a-yang-document and unresolved-import/grouping/augment noise. All are
   wired into yrepo via the local `[patch.crates-io]` override — keep that
   patch until the fixes are version-bumped/published.
-  Residual corpus parse-errors (~60) are remaining grammar gaps / invalid
-  MIB transcripts, mostly in `experimental/ietf-extracted-YANG-modules` — see
-  the `issue-hunter` skill.
+  Residual corpus parse-errors (~60) are overwhelmingly content artifacts in
+  `experimental/ietf-extracted-YANG-modules` — corrupted extraction text
+  (unterminated or embedded quotes, orphan statements, MIB transcripts) and
+  placeholder modules — not valid-YANG grammar gaps; sample drills confirm
+  quote corruption rather than new constructs. See the `issue-hunter` skill.
 
 ## Workflow skills
 
