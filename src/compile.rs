@@ -505,15 +505,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     // diagnostics keep their existing ordering. The cross-module augment /
     // deviation fixpoint below stays sequential: it mutates the shared
     // `records` and one augment may target another augment's node (D17).
-    let built = map_par(&to_compile, |m| {
-        let name = m.name.clone().unwrap();
-        let content: Vec<&Yang> = std::iter::once(*m)
-            .chain(content_of.get(&name).cloned().unwrap_or_default())
-            .collect();
-        let mut local = Vec::new();
-        let rec = build_module(&index, &content, &name, &mut local);
-        (rec, local)
-    });
+    let built = expand_phase(&index, &content_of, &to_compile);
     let mut records: Vec<ModuleRecord> = Vec::with_capacity(built.len());
     for (rec, mut local) in built {
         diags.append(&mut local);
@@ -1506,6 +1498,25 @@ fn target_instance(
                 .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
         })
         .or_else(|| index.module_index.get(module).copied())
+}
+
+/// The EXPANSION phase (③): per module instance, expand the effective tree
+/// from its own content (module + folded submodules) — parallelized with the
+/// `parallel` feature, per-module diagnostics collected in module order.
+fn expand_phase<'a>(
+    index: &Index<'a>,
+    content_of: &HashMap<String, Vec<&'a Yang>>,
+    to_compile: &[&'a Yang],
+) -> Vec<(ModuleRecord, Vec<Diagnostic>)> {
+    map_par(to_compile, |m| {
+        let name = m.name.clone().unwrap();
+        let content: Vec<&Yang> = std::iter::once(*m)
+            .chain(content_of.get(&name).cloned().unwrap_or_default())
+            .collect();
+        let mut local = Vec::new();
+        let rec = build_module(index, &content, &name, &mut local);
+        (rec, local)
+    })
 }
 
 /// The AUGMENT/DEVIATION phase (③): after every effective base tree exists,
