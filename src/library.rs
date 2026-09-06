@@ -196,12 +196,20 @@ impl Library {
         if segments.is_empty() {
             return None;
         }
+        // Predicates (`[…]`) select list instances, never schema nodes: drop
+        // them segment-wise so `/a:b/c:d[k='v']/e:f` walks a:b -> c:d -> e:f.
+        fn strip_preds(seg: &str) -> &str {
+            match seg.find('[') {
+                Some(i) => &seg[..i],
+                None => seg,
+            }
+        }
         let (target_name, first_local) = match segments[0].split_once(':') {
             Some((prefix, local)) => {
                 let t = self.prefix_to_module(module, prefix)?;
-                (t.to_string(), local)
+                (t.to_string(), strip_preds(local))
             }
-            None => (module.to_string(), segments[0]),
+            None => (module.to_string(), strip_preds(segments[0])),
         };
         let target = self.module(&target_name)?;
         let mut current = target
@@ -215,7 +223,10 @@ impl Library {
             })
             .copied()?;
         for seg in &segments[1..] {
-            let local = seg.rsplit(':').next().unwrap_or(seg);
+            let local = strip_preds(seg)
+                .rsplit(':')
+                .next()
+                .unwrap_or(strip_preds(seg));
             let node = target.node(current)?;
             current = node
                 .children()
