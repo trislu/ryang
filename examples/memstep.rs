@@ -47,7 +47,13 @@ fn main() {
     }
 
     let log_target = std::env::var("MEMSTEP_LOG").ok();
-    let mut file = log_target.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    let mut file = log_target.and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
     let mut log = |msg: &str| {
         eprintln!("{msg}");
         if let Some(f) = file.as_mut() {
@@ -75,7 +81,11 @@ fn main() {
     log(&format!(
         "[memstep] start dir={dir} files={total} log_every={log_every} sleep_ms={sleep_ms} compile_every={compile_every} start_at={start_at} stop_at={stop_at:?}"
     ));
-    log(&format!("[memstep] rss0_kb={} peak_kb={}", rss_kb(), peak_kb()));
+    log(&format!(
+        "[memstep] rss0_kb={} peak_kb={}",
+        rss_kb(),
+        peak_kb()
+    ));
 
     let mut repo = yrepo::Repository::new();
     let mut source_bytes: u64 = 0;
@@ -84,10 +94,10 @@ fn main() {
         if idx < start_at {
             continue;
         }
-        if let Some(stop) = stop_at {
-            if idx > stop {
-                break;
-            }
+        if let Some(stop) = stop_at
+            && idx > stop
+        {
+            break;
         }
         let url = path.to_string_lossy().to_string();
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -129,12 +139,11 @@ fn main() {
 fn proc_self_status_kb(tag: &str) -> u64 {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     for line in s.lines() {
-        if let Some(rest) = line.strip_prefix(tag) {
-            if let Some(num) = rest.trim().strip_suffix("kB") {
-                if let Ok(v) = num.trim().parse::<u64>() {
-                    return v;
-                }
-            }
+        if let Some(rest) = line.strip_prefix(tag)
+            && let Some(num) = rest.trim().strip_suffix("kB")
+            && let Ok(v) = num.trim().parse::<u64>()
+        {
+            return v;
         }
     }
     0
