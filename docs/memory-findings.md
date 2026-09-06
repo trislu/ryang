@@ -26,6 +26,15 @@ owned duplicate = **130%** of source (tokens 201/file).
 Waterline: ingest RSS ≈ 40 KB/file (42× source); compile adds a transient
 ≈ +22 MB at 1500 files (peak 86 MB), which scales with the arena/library.
 
+## Real modules (RFC dir subset: 486 files, 19.5 KB avg, 9.5 MB total)
+
+Decomposition: statements 260/file; `Argument.logical` owned bytes = **64%**
+of source; token text = 78% of source (927 tokens/file); owned duplicate =
+**142%** of source; comments 5/file. Real content therefore shows HIGHER
+string duplication than the synthetic sets, so the rope-range redesign's
+ceiling on realistic trees is above the synthetic estimate (string bytes +
+one heap allocation per argument and per token).
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
