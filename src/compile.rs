@@ -1757,8 +1757,21 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
         }
     }
 
-    // leaf / leaf-list type references (scope = the module owning the node)
-    for rec in records {
+    // Leaf / leaf-list type references are judged against the module instance
+    // that PHYSICALLY defines the node (its `defining` file), not the
+    // canonical instance of the node's `origin_module` name. Revisions of a
+    // module coexist in the corpus; a non-canonical revision's own typedefs
+    // (and import pins) are the ones its internal `type` references resolve
+    // against. Cross-instance nodes (born from a canonical grouping via
+    // `uses`, or from another module's augment) carry a `defining` url that
+    // belongs to exactly one other record, which this map finds. Direct nodes
+    // (including folded-submodule content) live in `rec` itself.
+    let url_to_rec: HashMap<Arc<str>, usize> = records
+        .iter()
+        .enumerate()
+        .flat_map(|(i, r)| r.source_urls.iter().cloned().map(move |u| (u, i)))
+        .collect();
+    for (ri, rec) in records.iter().enumerate() {
         for n in &rec.nodes {
             if !matches!(n.kind, NodeKind::Leaf | NodeKind::LeafList) || n.removed {
                 continue;
@@ -1769,27 +1782,47 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
             if crate::schema::is_builtin_type(t) {
                 continue;
             }
-            let Some(&si) = by_name.get(n.origin_module.as_ref()) else {
+            let own_file = rec.source_urls.iter().any(|u| u == &n.defining.url);
+            let si = if own_file {
+                Some(ri)
+            } else {
+                url_to_rec
+                    .get(&n.defining.url)
+                    .copied()
+                    .or_else(|| by_name.get(n.origin_module.as_ref()).copied())
+            };
+            let Some(si) = si else {
                 continue;
             };
             let scope_rec = &records[si];
-            let local = symbol_local(t);
-            match resolve_symbol_module(scope_rec, t) {
-                Resolve::PrefixUnknown => {}
-                Resolve::Module(m) => {
-                    let prefix = t.split(':').next().unwrap_or(t);
-                    if let Some(i) = pick(scope_rec, m.as_str(), prefix)
-                        && !records[i].typedefs.iter().any(|x| x.name == local)
-                    {
-                        push_symbol_err(
-                            None,
-                            &n.defining,
-                            DiagnosticCode::UnresolvedTypedef,
-                            format!("type '{t}' is not a builtin and no such typedef is in scope"),
-                            &mut diags,
-                        );
+            let unresolved = |diags: &mut Vec<Diagnostic>| {
+                push_symbol_err(
+                    None,
+                    &n.defining,
+                    DiagnosticCode::UnresolvedTypedef,
+                    format!("type '{t}' is not a builtin and no such typedef is in scope"),
+                    diags,
+                );
+            };
+            // An unprefixed type names a typedef of the CURRENT module only
+            // (RFC 7950 §9.2.4); it must resolve against the owning instance's
+            // own typedefs — never against another revision of the same name.
+            match t.split_once(':') {
+                None => {
+                    if !scope_rec.typedefs.iter().any(|x| x.name == t) {
+                        unresolved(&mut diags);
                     }
                 }
+                Some((prefix, local)) => match resolve_symbol_module(scope_rec, t) {
+                    Resolve::PrefixUnknown => {}
+                    Resolve::Module(m) => {
+                        if let Some(i) = pick(scope_rec, m.as_str(), prefix)
+                            && !records[i].typedefs.iter().any(|x| x.name == local)
+                        {
+                            unresolved(&mut diags);
+                        }
+                    }
+                },
             }
         }
     }
