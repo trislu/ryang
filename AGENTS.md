@@ -30,6 +30,10 @@ file at a time, logs RSS/VmHWM every `--log-every` files with optional
 `--start-at`/`--stop-at` bounds, logs also appended to `$MEMSTEP_LOG` (durable
 "last words" when probing the memory edge). Build without `--features
 parallel` for a single-threaded ingest path.
+`examples/memcomp.rs` is the non-parallel retention DECOMPOSITION tool: after
+sequentially ingesting a tree it totals statements, owned argument-string
+bytes, token-string bytes and comments per document, for estimating string
+duplication vs whole-source retention (rope-range redesign decisions).
 
 ## Bench baseline
 
