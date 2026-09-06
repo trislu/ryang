@@ -66,12 +66,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = args
         .get(1)
-        .expect("serveperf <dir> [--roots N] [--limit K] [--root-name N] [--csv f] [--no-compile] [--no-text-light]");
+        .expect("serveperf <dir> [--roots N] [--limit K] [--root-name N] [--csv f] [--no-compile] [--no-text-light] [--file-list f]");
     let mut roots_n: usize = 20;
     let mut limit: Option<usize> = None;
     let mut light = true;
     let mut root_name: Option<String> = None;
     let mut csv: Option<std::path::PathBuf> = None;
+    let mut file_list: Option<std::path::PathBuf> = None;
     let mut do_compile = true;
     let mut i = 2;
     while i < args.len() {
@@ -95,6 +96,10 @@ fn main() {
                 csv = args.get(i + 1).map(std::path::PathBuf::from);
                 i += 2;
             }
+            "--file-list" => {
+                file_list = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 2;
+            }
             "--no-compile" => {
                 do_compile = false;
                 i += 1;
@@ -107,8 +112,20 @@ fn main() {
         }
     }
 
+    // Walk the tree, or take a pre-generated sorted file list (--file-list)
+    // so repeated runs at many --limit values do not re-walk the tree.
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    walk(Path::new(dir), &mut files);
+    match &file_list {
+        Some(path) => {
+            for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    files.push(std::path::PathBuf::from(line));
+                }
+            }
+        }
+        None => walk(Path::new(dir), &mut files),
+    }
     files.sort();
     if let Some(k) = limit {
         files.truncate(k);
