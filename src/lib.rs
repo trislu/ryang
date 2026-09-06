@@ -24,6 +24,7 @@
 //! assert_eq!(m.top_nodes().len(), 1);
 //! ```
 
+mod catalog;
 mod compile;
 mod diag;
 mod fragment;
@@ -35,6 +36,7 @@ mod text;
 mod value;
 mod yang;
 
+pub use crate::catalog::Catalog;
 pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
 pub use crate::library::{IdentityStatus, Library, Outcome};
 pub use crate::schema::{

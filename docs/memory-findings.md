@@ -73,6 +73,16 @@ LEAN HEADER SCANNER (parse the CST only down to the module header: name,
 revision, imports/includes, prefix, namespace) whose per-file footprint should
 be a few KB — the next prototype to implement and measure.
 
+## Catalog record prototype (header fields only, transient parse)
+
+New `yrepo::Catalog` + `Catalog::scan` keep ONLY header facts (name,
+revision, prefix, imports, includes, parse status); the parse is transient.
+Real RFC subset (486 files): RSS settles ≈ 6.4 MB total (peak 6.9 MB),
+≈ **7 KB/file** catalog retention. Extrapolating ~163k files ≈ ~1.2 GB —
+feasible as an in-process catalog (before any closure compiles), unlike
+full-parse retention. Next: trim remaining catalog fields if needed, then the
+language-server catalog-wide scan + on-demand closure compile.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest
