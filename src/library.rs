@@ -670,6 +670,18 @@ impl Library {
         out
     }
 
+    /// `(prefix, module name)` pairs for every import of `module` (in source
+    /// order), for prefix completion of cross-module paths and references.
+    pub fn import_prefixes(&self, module: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if let Some(rec) = self.module(module) {
+            for imp in &rec.imports {
+                out.push((imp.prefix.clone(), imp.module.clone()));
+            }
+        }
+        out
+    }
+
     /// Grouping names available for a `uses` argument: the module's own
     /// groupings (bare) plus imported modules' groupings as `prefix:name`.
     pub fn grouping_candidates(&self, module: &str) -> Vec<String> {
