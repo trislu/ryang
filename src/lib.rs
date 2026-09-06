@@ -179,6 +179,12 @@ impl Repository {
         self.docs.is_empty()
     }
 
+    /// The urls of every open document (arbitrary order). Used by callers
+    /// that reconcile a repository against a needed set (serving modes).
+    pub fn urls(&self) -> Vec<&str> {
+        self.by_url.keys().map(String::as_str).collect()
+    }
+
     /// Compile the whole workspace into a fresh [`Library`] snapshot, with
     /// diagnostics for every document.
     ///
