@@ -34,7 +34,7 @@ feature (2026-09-06):
 
 | tool | result |
 | --- | --- |
-| `inspect` | ~0.45–0.6 s; **2004** diagnostics (1668 errors / 336 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 836, unresolved-typedef 215, unresolved-grouping 317, duplicate-module 278 (warnings), parse-error 100, not-a-yang-document 58, unresolved-import 85, unresolved-identity 83, key-leaf-not-found 9 |
+| `inspect` | ~0.45–0.6 s; **1982** diagnostics (1646 errors / 336 warnings) with the local tree-sitter-yang grammar fixes (all unpublished; released 0.3.0 grammar: 2984) — top: augment-target-not-found 836, unresolved-grouping 317, duplicate-module 278 (warnings), unresolved-typedef 193, parse-error 100, unresolved-import 85, unresolved-identity 85, not-a-yang-document 58, unresolved-prefix 18, key-leaf-not-found 9 |
 | `perf` (single) | ~0.45–0.65 s wall / ~3.8–4.5 s CPU; RSS ~3 MB → **~721 MB peak** (VmHWM) |
 
 Treat these as a regression guard: if parse/compile/retention changes move time
@@ -60,9 +60,13 @@ by per-document tree-sitter CST retention — the current biggest lever.
 - Parser behavior changes belong in `tree-sitter-yang`: fix `grammar.js` there
   and regenerate (use the `parser-regen` skill; never hand-edit `parser.c`),
   then patch `yrepo` to the fixed grammar and bump the dependency.
-- Name-based references (unversioned imports, typedef/identity bases) resolve
-  to the HIGHEST revision of a module; each revision keeps its own symbol
-  table (canonical-latest resolution).
+- Name-based (prefixed) references — unversioned imports, typedef/identity
+  bases, prefixed `type` refs — resolve to the HIGHEST revision of a module
+  (canonical-latest); an import pinned with `revision-date` resolves to that
+  exact revision first. Each revision keeps its own symbol table. Internal
+  (unprefixed) references resolve against the owning module instance's OWN
+  table only — a non-canonical revision is validated on its own terms and
+  never sees another revision's typedefs (`021_typedef_own_revision.rs`).
 - The local `[patch.crates-io]` override pointing `tree-sitter-yang` at
   `../tree-sitter-yang` is a TEMPORARY dev convenience — never commit it;
   remove it once the grammar fixes are version-bumped and published, then
