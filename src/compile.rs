@@ -269,81 +269,8 @@ fn starts_with_angle(y: &Yang) -> bool {
 pub fn build(docs: &[&Yang]) -> BuildOutcome {
     let mut diags = Vec::new();
 
-    // ---- 1. classify ----------------------------------------------------
-    for y in docs {
-        for e in &y.parse_errors {
-            // A document whose first non-whitespace byte is '<' cannot be a
-            // YANG module/submodule (those start with the `module`/`submodule`
-            // keyword, possibly after comments). Such files (e.g. HTML/XML
-            // saved as `*.yang`) are reported once as `not-a-yang-document`
-            // below; the whole-file parse error adds only noise.
-            if starts_with_angle(y) {
-                continue;
-            }
-            diags.push(Diagnostic::error(
-                Some(y.url.clone()),
-                Some(e.range.clone()),
-                DiagnosticCode::ParseError,
-                e.message.clone(),
-            ));
-        }
-    }
-
-    let mut module_docs: Vec<&Yang> = Vec::new();
-    let mut sub_docs: Vec<&Yang> = Vec::new();
-    for y in docs {
-        match y.kind {
-            Some(UnitKind::Module) if y.name.is_some() => module_docs.push(y),
-            Some(UnitKind::Submodule) if y.name.is_some() => sub_docs.push(y),
-            _ => {
-                diags.push(Diagnostic::warning(
-                    Some(y.url.clone()),
-                    Some(0..y.source().len()),
-                    DiagnosticCode::NotYangDocument,
-                    "document does not contain a module or submodule",
-                ));
-            }
-        }
-    }
-
-    // Deduplicate modules with the same (name, revision). Among equal copies
-    // prefer one that parsed cleanly: a broken copy (whole-file parse
-    // failure) must not shadow a healthy copy and drag down every module
-    // that imports the name. Dropped copies are reported as warnings —
-    // visible but non-blocking (like pyang, which dedupes silently).
-    let mut best: HashMap<(String, Option<String>), usize> = HashMap::new();
-    for (i, y) in module_docs.iter().enumerate() {
-        let key = (y.name.clone().unwrap(), y.revision.clone());
-        let mut warn_drop = |dropped: &Yang| {
-            diags.push(Diagnostic::warning(
-                Some(dropped.url.clone()),
-                root_range(dropped),
-                DiagnosticCode::DuplicateModule,
-                format!(
-                    "duplicate module '{}' (same name and revision); this copy is ignored",
-                    key.0
-                ),
-            ));
-        };
-        match best.get(&key) {
-            None => {
-                best.insert(key, i);
-            }
-            Some(&j) => {
-                let keep = module_docs[j];
-                if !keep.parse_errors.is_empty() && y.parse_errors.is_empty() {
-                    warn_drop(keep);
-                    best.insert(key, i);
-                } else {
-                    warn_drop(y);
-                }
-            }
-        }
-    }
-    let mut chosen: Vec<&Yang> = best.values().map(|&i| module_docs[i]).collect();
-    // Deterministic order (urls are unique), preserving ingest independence.
-    chosen.sort_by(|a, b| a.url.cmp(&b.url));
-    let to_compile = chosen;
+    // ---- 1/2. classify + dedupe ------------------------------------------
+    let (module_docs, sub_docs, to_compile) = classify_and_dedupe_phase(docs, &mut diags);
 
     let (content_of, folded_sub) =
         attach_submodules_phase(&to_compile, &module_docs, &sub_docs, &mut diags);
@@ -1348,6 +1275,86 @@ fn target_instance(
                 .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
         })
         .or_else(|| index.module_index.get(module).copied())
+}
+
+/// The CLASSIFY + DEDUPE phase (③): report parse errors (except for
+/// non-YANG documents that get a single not-a-yang warning), split module vs
+/// submodule documents, and deduplicate modules with the same (name,
+/// revision), preferring the parse-clean copy. Returns `(module_docs,
+/// sub_docs, to_compile)` in deterministic (url) order.
+fn classify_and_dedupe_phase<'a>(
+    docs: &[&'a Yang],
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<&'a Yang>, Vec<&'a Yang>, Vec<&'a Yang>) {
+    for y in docs {
+        for e in &y.parse_errors {
+            // A document whose first non-whitespace byte is '<' cannot be a
+            // YANG module/submodule; such files are reported once as
+            // not-a-yang-document below, and the whole-file parse error would
+            // only add noise.
+            if starts_with_angle(y) {
+                continue;
+            }
+            diags.push(Diagnostic::error(
+                Some(y.url.clone()),
+                Some(e.range.clone()),
+                DiagnosticCode::ParseError,
+                e.message.clone(),
+            ));
+        }
+    }
+
+    let mut module_docs: Vec<&Yang> = Vec::new();
+    let mut sub_docs: Vec<&Yang> = Vec::new();
+    for y in docs {
+        match y.kind {
+            Some(UnitKind::Module) if y.name.is_some() => module_docs.push(y),
+            Some(UnitKind::Submodule) if y.name.is_some() => sub_docs.push(y),
+            _ => {
+                diags.push(Diagnostic::warning(
+                    Some(y.url.clone()),
+                    Some(0..y.source().len()),
+                    DiagnosticCode::NotYangDocument,
+                    "document does not contain a module or submodule",
+                ));
+            }
+        }
+    }
+
+    // Deduplicate modules with the same (name, revision). Among equal copies
+    // prefer one that parsed cleanly. Dropped copies are warnings.
+    let mut best: HashMap<(String, Option<String>), usize> = HashMap::new();
+    for (i, y) in module_docs.iter().enumerate() {
+        let key = (y.name.clone().unwrap(), y.revision.clone());
+        let mut warn_drop = |dropped: &Yang| {
+            diags.push(Diagnostic::warning(
+                Some(dropped.url.clone()),
+                root_range(dropped),
+                DiagnosticCode::DuplicateModule,
+                format!(
+                    "duplicate module '{}' (same name and revision); this copy is ignored",
+                    key.0
+                ),
+            ));
+        };
+        match best.get(&key) {
+            None => {
+                best.insert(key, i);
+            }
+            Some(&j) => {
+                let keep = module_docs[j];
+                if !keep.parse_errors.is_empty() && y.parse_errors.is_empty() {
+                    warn_drop(keep);
+                    best.insert(key, i);
+                } else {
+                    warn_drop(y);
+                }
+            }
+        }
+    }
+    let mut chosen: Vec<&Yang> = best.values().map(|&i| module_docs[i]).collect();
+    chosen.sort_by(|a, b| a.url.cmp(&b.url));
+    (module_docs, sub_docs, chosen)
 }
 
 /// The ATTACH-SUBMODULES phase (③): build the per-module content set
