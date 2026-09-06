@@ -26,6 +26,19 @@ owned duplicate = **130%** of source (tokens 201/file).
 Waterline: ingest RSS ≈ 40 KB/file (42× source); compile adds a transient
 ≈ +22 MB at 1500 files (peak 86 MB), which scales with the arena/library.
 
+## Real modules — ingest waterline (RFC dir subset sampling)
+
+memstep (sequential, post-CST-drop) on 200 of 486 real RFC files: RSS grows
+≈ 140–350 KB/file as later (larger) modules load — order of magnitude
+**~0.1–0.35 MB per ~20 KB module** (~10× source). Even the smallest reading
+makes a 163k-file full compile fundamentally multi-10-GB: holding full parse
+views + built schema arenas for every file in one process cannot fit WSL RAM.
+This is the load-bearing conclusion: rope-range (~≤15%) and CST-drop are
+secondary; the necessary lever is RETENTION/SCOPE — compile (and parse) only
+the closure of modules actually queried/open, with an index-only catalog for
+the rest. See `rope-range-inventory.md` and the language-server design note
+(closure-scoped compile) to follow.
+
 ## Real modules (RFC dir subset: 486 files, 19.5 KB avg, 9.5 MB total)
 
 Decomposition: statements 260/file; `Argument.logical` owned bytes = **64%**
