@@ -345,67 +345,8 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     chosen.sort_by(|a, b| a.url.cmp(&b.url));
     let to_compile = chosen;
 
-    let mut sub_by_name: HashMap<&str, Vec<&Yang>> = HashMap::new();
-    for s in &sub_docs {
-        sub_by_name
-            .entry(s.name.as_ref().unwrap().as_str())
-            .or_default()
-            .push(s);
-    }
-
-    // ---- 2. attach submodules (include tree) ---------------------------
-    let mut content_of: HashMap<String, Vec<&Yang>> = HashMap::new();
-    let mut folded_sub: HashMap<String, String> = HashMap::new(); // submodule url -> parent module
-    for m in &to_compile {
-        let parent_name = m.name.clone().unwrap();
-        let mut content: Vec<&Yang> = Vec::new();
-        let mut on_path: Vec<&Yang> = Vec::new();
-        let mut done: HashSet<String> = HashSet::new();
-        fold_submodules(
-            m,
-            &parent_name,
-            &sub_by_name,
-            &mut content,
-            &mut folded_sub,
-            &mut on_path,
-            &mut done,
-            &mut diags,
-        );
-        content_of.insert(parent_name.clone(), content);
-    }
-
-    // Unresolved belongs-to: submodule whose parent module is not open.
-    for s in &sub_docs {
-        let parent = s.belongs_to.as_ref().map(|(p, _)| p.clone());
-        let parent_open = parent
-            .as_ref()
-            .map(|p| {
-                module_docs
-                    .iter()
-                    .any(|m| m.name.as_deref() == Some(p.as_str()))
-            })
-            .unwrap_or(false);
-        if !parent_open {
-            let range = s
-                .root()
-                .and_then(|r| r.find_one(StatementKind::BelongsTo))
-                .map(|b| b.range.clone());
-            diags.push(Diagnostic::error(
-                Some(s.url.clone()),
-                range,
-                DiagnosticCode::UnresolvedBelongsTo,
-                format!(
-                    "submodule '{}' belongs-to '{}' but that module is not open",
-                    s.name.clone().unwrap_or_default(),
-                    parent.unwrap_or_default()
-                ),
-            ));
-        }
-    }
-
-    // Import cycles are forbidden by RFC 7950 §5.1 — report each one.
-    detect_import_cycles(&to_compile, &content_of, &mut diags);
-
+    let (content_of, folded_sub) =
+        attach_submodules_phase(&to_compile, &module_docs, &sub_docs, &mut diags);
     let index = symbol_scan_phase(&to_compile, &content_of);
     // ---- 4+5. expand + apply augment/deviation --------------------------
     // Effective-tree expansion reads only `index`/`content_of` and is
@@ -1407,6 +1348,78 @@ fn target_instance(
                 .position(|r| r.name == module && r.revision.as_deref() == Some(rv.as_str()))
         })
         .or_else(|| index.module_index.get(module).copied())
+}
+
+/// The ATTACH-SUBMODULES phase (③): build the per-module content set
+/// (module + its include tree), record which submodule belongs to which
+/// parent, report unresolved belongs-to and import cycles. Returns
+/// `(content_of, folded_sub)` for the later phases.
+fn attach_submodules_phase<'a>(
+    to_compile: &[&'a Yang],
+    module_docs: &[&'a Yang],
+    sub_docs: &[&'a Yang],
+    diags: &mut Vec<Diagnostic>,
+) -> (HashMap<String, Vec<&'a Yang>>, HashMap<String, String>) {
+    let mut sub_by_name: HashMap<&str, Vec<&Yang>> = HashMap::new();
+    for s in sub_docs {
+        sub_by_name
+            .entry(s.name.as_ref().unwrap().as_str())
+            .or_default()
+            .push(s);
+    }
+
+    let mut content_of: HashMap<String, Vec<&Yang>> = HashMap::new();
+    let mut folded_sub: HashMap<String, String> = HashMap::new(); // submodule url -> parent module
+    for m in to_compile {
+        let parent_name = m.name.clone().unwrap();
+        let mut content: Vec<&Yang> = Vec::new();
+        let mut on_path: Vec<&Yang> = Vec::new();
+        let mut done: HashSet<String> = HashSet::new();
+        fold_submodules(
+            m,
+            &parent_name,
+            &sub_by_name,
+            &mut content,
+            &mut folded_sub,
+            &mut on_path,
+            &mut done,
+            diags,
+        );
+        content_of.insert(parent_name.clone(), content);
+    }
+
+    // Unresolved belongs-to: submodule whose parent module is not open.
+    for s in sub_docs {
+        let parent = s.belongs_to.as_ref().map(|(p, _)| p.clone());
+        let parent_open = parent
+            .as_ref()
+            .map(|p| {
+                module_docs
+                    .iter()
+                    .any(|m| m.name.as_deref() == Some(p.as_str()))
+            })
+            .unwrap_or(false);
+        if !parent_open {
+            let range = s
+                .root()
+                .and_then(|r| r.find_one(StatementKind::BelongsTo))
+                .map(|b| b.range.clone());
+            diags.push(Diagnostic::error(
+                Some(s.url.clone()),
+                range,
+                DiagnosticCode::UnresolvedBelongsTo,
+                format!(
+                    "submodule '{}' belongs-to '{}' but that module is not open",
+                    s.name.clone().unwrap_or_default(),
+                    parent.unwrap_or_default()
+                ),
+            ));
+        }
+    }
+
+    // Import cycles are forbidden by RFC 7950 §5.1 — report each one.
+    detect_import_cycles(to_compile, &content_of, diags);
+    (content_of, folded_sub)
 }
 
 /// The SYMBOL-SCAN phase (③): per module INSTANCE, collect the prefix map
