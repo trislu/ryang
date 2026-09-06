@@ -116,7 +116,10 @@ echo "tests_ok=$tests_ok" | tee -a "$report"
 if [[ -n "$corpus" ]]; then
   echo "-- inspect $corpus_name --" | tee -a "$report"
   insp=$(./target/release/examples/inspect "$corpus" 2>&1) || true
-  echo "$insp" | sed -n '1,16p' | tee -a "$report"
+  # Crop the inspect block at the parse-detail section: keep the header and
+  # the FULL by-code histogram (alphabetical order puts some codes, e.g.
+  # unresolved-typedef, after the old fixed 16-line crop cut them off).
+  echo "$insp" | sed -n '1,/^-- parse diagnostics with long ranges --/p' | sed '$d' | tee -a "$report"
   total=$(echo "$insp" | sed -n 's/^total diagnostics: //p')
   if [[ -n "$total" ]]; then
     if [[ -f "$prev" ]]; then
