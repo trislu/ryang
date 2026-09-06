@@ -37,9 +37,3 @@ strip = true
 lto = true
 codegen-units = 1
 opt-level = 3
-
-
-# Local override while developing an unpublished tree-sitter-yang grammar fix
-# (remove it once the fix is released and the dependency version is bumped).
-[patch.crates-io]
-tree-sitter-yang = { path = "../tree-sitter-yang" }
