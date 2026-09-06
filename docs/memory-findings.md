@@ -149,9 +149,9 @@ huge per-name duplication explains the low per-file retention):
 
 | probe | result |
 | --- | --- |
-| `catmem` sequential catalog, full tree | 228 MB RSS retained, 179 s wall, ~1.2 KB/file avg (large-module early files ~4.6 KB/file, later small/duplicate files pull the mean down) |
+| `catmem` sequential catalog, full tree | 228 MB RSS retained, 170 s wall (LTO release profile), ~1.2 KB/file avg (large-module early files ~4.6 KB/file, later small/duplicate files pull the mean down) |
 | language server (sequential `fill_catalog`), full tree | 218 s wall, 255 MB RSS; opening a real RFC module adds ~0.4 MB; diagnostic pull 0.6 s, 0 errors |
-| `serveperf` parallel catalog scan, full tree | 27–29 s wall (~6x over sequential), but RSS/VmHWM ~1.4–2.5 GB run-dependent — the 16-way transient parse high-water, NOT retained catalog (allocator keeps freed CST arenas) |
+| `serveperf` parallel catalog scan, full tree | 23.5 s wall (LTO release profile, ~7x over sequential), but RSS/VmHWM ~1.5–2.4 GB run-dependent — the 16-way transient parse high-water, NOT retained catalog (allocator keeps freed CST arenas) |
 
 Conclusion: the serving catalog for the full giant population is ~230 MB
 retained — comfortably in-process — and the language server serves a real
