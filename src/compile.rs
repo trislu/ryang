@@ -933,6 +933,7 @@ fn build_module(
         rec.imports.push(ImportInfo {
             module: imp.module.clone(),
             prefix: imp.prefix.clone(),
+            revision: imp.revision.clone(),
         });
     }
     // includes (folded submodule names)
@@ -1655,6 +1656,28 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
         }
     }
 
+    let mut rev_idx: HashMap<(String, String), usize> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        rev_idx.insert((r.name.clone(), r.revision.clone().unwrap_or_default()), i);
+    }
+    // Resolve an import prefix to the record instance this module actually
+    // pinned (import revision-date); fall back to canonical-latest.
+    let pick = |rec: &ModuleRecord, module: &str, prefix: &str| -> Option<usize> {
+        if let Some(imp) = rec
+            .imports
+            .iter()
+            .find(|i| i.prefix == prefix && i.module == module)
+        {
+            if let Some(rv) = &imp.revision {
+                let key = (module.to_string(), rv.clone());
+                if let Some(&i2) = rev_idx.get(&key) {
+                    return Some(i2);
+                }
+            }
+        }
+        by_name.get(module).copied()
+    };
+
     // typedef -> its base type
     for rec in records {
         for t in &rec.typedefs {
@@ -1713,7 +1736,8 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                         &mut diags,
                     ),
                     Resolve::Module(m) => {
-                        let found = by_name.get(m.as_str()).map(|&i| {
+                        let pfx = base.split(':').next().unwrap_or(base);
+                        let found = pick(rec, m.as_str(), pfx).map(|i| {
                             records[i]
                                 .identities
                                 .iter()
@@ -1758,7 +1782,8 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
             match resolve_symbol_module(scope_rec, t) {
                 Resolve::PrefixUnknown => {}
                 Resolve::Module(m) => {
-                    if let Some(&i) = by_name.get(m.as_str())
+                    let prefix = t.split(':').next().unwrap_or(t);
+                    if let Some(i) = pick(scope_rec, m.as_str(), prefix)
                         && !records[i].typedefs.iter().any(|x| x.name == local)
                     {
                         push_symbol_err(

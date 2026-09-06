@@ -377,6 +377,8 @@ pub struct AppliedDeviation {
 pub struct ImportInfo {
     pub module: String,
     pub prefix: String,
+    /// revision-date from the import statement, when pinned.
+    pub revision: Option<String>,
 }
 
 /// The compiled semantic record for one module (submodules folded in, [D6]).
