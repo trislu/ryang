@@ -52,3 +52,188 @@ impl Catalog {
         }
     }
 }
+
+/// An in-memory catalog of scanned documents, indexed by module name (for
+/// import resolution) and by document url (for open-buffer lookup).
+#[derive(Debug, Default)]
+pub struct CatalogIndex {
+    by_name: std::collections::HashMap<String, Vec<usize>>,
+    entries: Vec<Catalog>,
+    by_url: std::collections::HashMap<Arc<str>, usize>,
+}
+
+impl CatalogIndex {
+    /// Add one scanned document (callers feed entries in any order).
+    pub fn push(&mut self, c: Catalog) {
+        let url = c.url.clone();
+        let i = self.entries.len();
+        if let Some(name) = (!c.name.is_empty()).then(|| c.name.clone()) {
+            self.by_name.entry(name).or_default().push(i);
+        }
+        self.entries.push(c);
+        self.by_url.insert(url, i);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The catalog entry whose url matches `url`.
+    pub fn of_url(&self, url: &str) -> Option<&Catalog> {
+        self.by_url.get(url).map(|&i| &self.entries[i])
+    }
+
+    /// The highest-revision entry named `name` (canonical-latest; parse-clean
+    /// wins among equal revisions).
+    pub fn canonical(&self, name: &str) -> Option<&Catalog> {
+        let idx = self.by_name.get(name)?;
+        idx.iter()
+            .max_by(|&&a, &&b| {
+                let a = &self.entries[a];
+                let b = &self.entries[b];
+                let ra = a.revision.clone().unwrap_or_default();
+                let rb = b.revision.clone().unwrap_or_default();
+                ra.cmp(&rb).then_with(|| b.parse_ok.cmp(&a.parse_ok))
+            })
+            .map(|&i| &self.entries[i])
+    }
+}
+
+/// Build a Repository that contains `roots` and the full reachable closure
+/// through the catalog: import edges (module names) plus include edges
+/// (submodule names — submodules are separate documents folded into their
+/// parent at compile time). Documents are read on demand via `read`
+/// (url -> source) and parsed with `light` (text-light mode) when set.
+/// A name that cannot be resolved in the catalog is skipped, never an error
+/// (mirrors import resolution: dangling imports surface as diagnostics).
+pub fn build_closure_repository(
+    index: &CatalogIndex,
+    roots: &[String],
+    light: bool,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> crate::Repository {
+    let mut repo = crate::Repository::new();
+    repo.set_text_light(light);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue: Vec<String> = roots.to_vec();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(entry) = index.canonical(&name) else {
+            continue; // unresolved import/include: not in this tree
+        };
+        let Some(source) = read(&entry.url) else {
+            continue; // file missing on disk: open doc may still supply it later
+        };
+        repo.upsert(entry.url.clone().to_string(), source);
+        for (module, _) in &entry.imports {
+            if !seen.contains(module) {
+                queue.push(module.clone());
+            }
+        }
+        for sub in &entry.includes {
+            if !seen.contains(sub) {
+                queue.push(sub.clone());
+            }
+        }
+    }
+    repo
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan_set(
+        files: &[(&str, &str)],
+    ) -> (CatalogIndex, std::collections::HashMap<String, String>) {
+        let mut index = CatalogIndex::default();
+        let mut sources = std::collections::HashMap::new();
+        for (url, src) in files {
+            sources.insert((*url).to_string(), (*src).to_string());
+            index.push(Catalog::scan(*url, *src));
+        }
+        (index, sources)
+    }
+
+    #[test]
+    fn index_canonical_picks_latest_clean_revision() {
+        let (index, _) = scan_set(&[
+            (
+                "/m/m.yang",
+                "module m { namespace \"urn:m\"; prefix m; revision 2020-01-01; leaf a { type string; } }",
+            ),
+            (
+                "/m/m-old.yang",
+                "module m { namespace \"urn:m\"; prefix m; revision 2019-01-01; leaf b { type string; } }",
+            ),
+        ]);
+        assert_eq!(index.len(), 2);
+        let canon = index.canonical("m").expect("m indexed");
+        assert_eq!(canon.url.as_ref(), "/m/m.yang");
+        assert_eq!(canon.revision.as_deref(), Some("2020-01-01"));
+        assert_eq!(
+            index
+                .of_url("/m/m-old.yang")
+                .expect("by url")
+                .revision
+                .as_deref(),
+            Some("2019-01-01")
+        );
+    }
+
+    #[test]
+    fn closure_loads_import_and_include_transitively() {
+        let files: &[(&str, &str)] = &[
+            (
+                "/r/a.yang",
+                "module a { namespace \"urn:a\"; prefix a;\n  import b { prefix b; }\n  include a-sub;\n  leaf x { type string; }\n}",
+            ),
+            (
+                "/r/b.yang",
+                "module b { namespace \"urn:b\"; prefix b;\n  import c { prefix c; }\n  leaf y { type string; }\n}",
+            ),
+            (
+                "/r/c.yang",
+                "module c { namespace \"urn:c\"; prefix c;\n  leaf z { type string; }\n}",
+            ),
+            (
+                "/r/a-sub.yang",
+                "submodule a-sub { belongs-to a { prefix a; }\n  leaf hidden { type string; }\n}",
+            ),
+        ];
+        let (index, sources) = scan_set(files);
+        let repo = build_closure_repository(&index, &["a".to_string()], false, &|url| {
+            sources.get(url).cloned()
+        });
+        let outcome = repo.compile();
+        // import + include edges both walked: a, b, c compile; the submodule
+        // is folded into a (not a separate module).
+        let lib = outcome.library.expect("closure compiles");
+        assert!(lib.module("a").is_some());
+        assert!(lib.module("b").is_some());
+        assert!(lib.module("c").is_some());
+        assert!(lib.module("a-sub").is_none());
+    }
+
+    #[test]
+    fn closure_skips_unresolvable_names() {
+        let (index, sources) = scan_set(&[(
+            "/r/d.yang",
+            "module d { namespace \"urn:d\"; prefix d;\n  import ghost { prefix g; }\n  leaf w { type string; }\n}",
+        )]);
+        let repo = build_closure_repository(&index, &["d".to_string()], false, &|url| {
+            sources.get(url).cloned()
+        });
+        let outcome = repo.compile();
+        assert!(
+            outcome.library.is_some(),
+            "dangling import is a diagnostic, not a hard failure"
+        );
+    }
+}

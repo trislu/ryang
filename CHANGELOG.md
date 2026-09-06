@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Catalog-only indexing for very large trees**:
+  `yrepo::Catalog` (`Catalog::scan`) parses a document transiently and retains
+  only its header facts (name, revision, prefix, imports, includes, parse
+  status) — roughly 7 KB per file instead of full parse views.
+- **`yrepo::CatalogIndex` + `yrepo::build_closure_repository`** (the
+  serve-by-closure API): an index of scanned catalogs keyed by module name and
+  document url, plus a repository builder that parses and compiles only the
+  roots and their reachable closure (imports + includes resolved by name,
+  documents read on demand via a caller-supplied reader).
+- **Opt-in text-light parsing**: `Repository::set_text_light(true)` drops
+  description/reference/organization/contact statements from the Statement
+  tree and their quoted runs from the token stream. Schema resolution and LSP
+  semantics are unaffected (tests `027_text_light.rs`); default OFF.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added

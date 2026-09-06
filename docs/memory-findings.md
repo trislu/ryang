@@ -110,6 +110,37 @@ meaningful but bounded: remaining token/statement structure and full-parse
 costs still dominate — text-light belongs in the serving path (catalog +
 closure + light) rather than standing alone.
 
+## CatalogIndex + closure repository (implemented: serve-by-closure API)
+
+`yrepo::CatalogIndex` indexes scanned `Catalog` records by module name and by
+document url; `canonical(name)` picks the highest-revision parse-clean entry
+(the same rule `compile` applies to duplicate modules).
+`yrepo::build_closure_repository(index, roots, light, read)` parses exactly
+`roots` plus everything reachable through the catalog's import edges (module
+names) AND include edges (submodule names — submodules are separate documents
+folded into their parent at compile time), reading each document on demand via
+a caller-supplied `read` (url -> source). Names missing from the catalog are
+skipped (a dangling import surfaces as a diagnostic, never an error).
+
+`examples/closure.rs` now runs this path over a real-module subset (the
+YangModels `standard/ietf/RFC` tree, 486 files), RELEASE build:
+
+| probe | modules+submodules | diags | RSS |
+| --- | --- | --- | --- |
+| catalog scan (whole 486-file tree) | — | — | ≈ 6.4 MB |
+| roots=20 (default) | 41 + 0 | 5 | 22.4 MB |
+| roots=50 | 75 + 0 | 6 | 30.4 MB |
+| roots=100 | 119 + 1 | 10 | 48.9 MB |
+| roots=200 | 204 + 12 | 25 | 81.4 MB |
+| roots=200, text-light | 204 + 12 | 25 (same) | 73.1 MB (**−10%**) |
+
+Readings confirm the serving model: memory grows with the modules actually
+compiled (roughly linear ~0.3–0.4 MB/module through this closure, dominated by
+statement/token structure + arena), NOT with the underlying tree size — the
+whole 486-file tree costs only ~7 KB/file to keep indexed as a catalog.
+Text-light applies its ~10% saving at closure-compile time too, with identical
+diagnostics.
+
 ## Interpretation
 
 1. Dropping the retained tree-sitter CST (no consumer; committed) cut ingest

@@ -36,7 +36,7 @@ mod text;
 mod value;
 mod yang;
 
-pub use crate::catalog::Catalog;
+pub use crate::catalog::{Catalog, CatalogIndex, build_closure_repository};
 pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
 pub use crate::library::{IdentityStatus, Library, Outcome};
 pub use crate::schema::{
