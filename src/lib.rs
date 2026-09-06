@@ -48,6 +48,7 @@ pub use crate::value::{TypeFacets, ValueType};
 pub use crate::yang::{Import, Include, UnitKind};
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::compile::BuildOutcome;
@@ -81,6 +82,50 @@ impl Repository {
     pub fn upsert(&mut self, url: impl Into<String>, source: impl Into<String>) {
         let url = url.into();
         let parsed = Yang::new(Arc::from(url.as_str()), source.into());
+        self.commit(url, parsed);
+    }
+
+    /// Read each file at `path` and insert or replace the document at `url`,
+    /// letting the repository read the files itself.
+    ///
+    /// Each file is read **and** parsed in parallel when the `parallel` cargo
+    /// feature is enabled (a plain sequential loop otherwise). Only the file a
+    /// worker is currently processing is in memory, so the whole workspace is
+    /// never buffered as text up front and the peak stays flat however many
+    /// documents are ingested.
+    ///
+    /// A file that cannot be read (missing, unreadable, not valid UTF-8) is
+    /// skipped, never an error. Documents are committed in `iter` order, so
+    /// this produces exactly the same `Library` and diagnostics as the
+    /// equivalent sequence of [`Repository::upsert`] calls (minus any document
+    /// whose file could not be read). Returns how many documents were inserted
+    /// or replaced.
+    pub fn upsert_many_files<I, U, P>(&mut self, iter: I) -> usize
+    where
+        I: IntoIterator<Item = (U, P)>,
+        U: Into<String>,
+        P: AsRef<Path>,
+    {
+        let items: Vec<(String, PathBuf)> = iter
+            .into_iter()
+            .map(|(url, path)| (url.into(), path.as_ref().to_path_buf()))
+            .collect();
+        // Read + parse off-thread (feature `parallel`); results stay in `items`
+        // order, with unreadable files dropped in place.
+        let parsed = crate::compile::map_par(&items, |(url, path)| {
+            let source = std::fs::read_to_string(path).ok()?;
+            Some((url.clone(), Yang::new(Arc::from(url.as_str()), source)))
+        });
+        let mut committed = 0usize;
+        for (url, doc) in parsed.into_iter().flatten() {
+            self.commit(url, doc);
+            committed += 1;
+        }
+        committed
+    }
+
+    /// Store a parsed document at `url` (replace an existing entry or append).
+    fn commit(&mut self, url: String, parsed: Yang) {
         match self.by_url.get(&url) {
             Some(&i) => self.docs[i] = parsed,
             None => {

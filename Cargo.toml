@@ -19,3 +19,12 @@ name = "yrepo"
 [dependencies]
 tree-sitter = "0.26"
 tree-sitter-yang = "0.3"
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = []
+# Parallel parsing/compilation (bulk file ingest via
+# `Repository::upsert_many_files` and the per-module phases of `compile`). Off
+# by default to keep the dependency tree lean; consumers who open/compile many
+# documents at once can enable it.
+parallel = ["dep:rayon"]

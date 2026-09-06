@@ -118,6 +118,25 @@ assert_eq!(
 - Groupings are instantiated into the effective tree at each `uses` site, and
   cross-module `augment`/`deviation` targets are resolved onto it.
 
+## Parallel parsing (optional)
+
+Parsing and the per-module phases of `compile` can run across threads with
+[rayon](https://docs.rs/rayon), gated behind the `parallel` cargo feature (off
+by default to keep the dependency tree lean):
+
+```toml
+[dependencies]
+yrepo = { version = "0.2", features = ["parallel"] }
+```
+
+With the feature enabled, `Repository::upsert_many_files` reads **and** parses
+a whole batch of documents off-thread (one file in memory at a time) — prefer
+it over looping `upsert` when opening many files at once (e.g. an LSP
+workspace scan) — and `compile` runs the symbol scan, effective-tree expansion
+and validation per module in parallel. Every parallel path preserves
+document/module order, so the resulting `Library` and diagnostics are
+identical to the sequential pipeline.
+
 ## Layout
 
 ```bash

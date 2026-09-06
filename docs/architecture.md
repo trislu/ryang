@@ -8,7 +8,7 @@
 > identifiers, quoted strings, numbers, booleans and `+` operators — as a
 > superset of comments, ready to feed LSP semantic tokens/highlighting (§7,
 > D15). Integration tests (`tests/NNN_*.rs`) and unit tests pass.
-> Decisions are recorded in the [decision log](#decision-log) (D1–D17).
+> Decisions are recorded in the [decision log](#decision-log) (D1–D20).
 >
 > v1.5 indexes `extension`/`feature` **symbols** (§7, D16): a module exposes
 > them and a `prefix:name` usage resolves through the import to the definition
@@ -19,6 +19,14 @@
 > installs. A post-v1.4 audit additionally produced A2/A5/A6 (recorded after
 > the decision log): deviation target-only resolution, and `config`-aware
 > list-`key` validation.
+>
+> v1.6 adds **optional parallel parsing & compilation** (feature `parallel`,
+> D20): `Repository::upsert_many_files` reads and parses a batch of files
+> off-thread with rayon, and the order-independent per-module phases of
+> `compile` — symbol scan, effective-tree expansion, and the light validation
+> passes — also run in parallel. Every parallel path is order-preserving, so
+> the resulting `Library` and diagnostics are identical to the sequential
+> pipeline; only the parse/compile wall-clock improves.
 
 ---
 
@@ -161,7 +169,7 @@ modules would add ceremony without clarity.
 
 | concern | API |
 | --- | --- |
-| document mgmt | `Repository::new()`, `upsert(url, source)`, `remove(url) -> bool`, `contains(url)`, `len()` |
+| document mgmt | `Repository::new()`, `upsert(url, source)`, `upsert_many_files((url, path)…)` (reads + parses a file batch, D20), `remove(url) -> bool`, `contains(url)`, `len()` |
 | compile workspace | `Repository::compile() -> Outcome` (`Option<Arc<Library>>`, `Vec<Diagnostic>`) |
 | module lookup (latest) | `Library::module(name)` — rustdoc: resolves the latest revision; a module without `revision` is valid and registered under the empty revision (D7) |
 | module lookup (exact) | `Library::module_rev(name, rev)` — rustdoc: exact `(name, rev)`; `None` if not loaded (D7) |
@@ -270,6 +278,7 @@ netconf-language-server tracks it as D31.
 | D17 | **Effective-tree guarantees for cross-module resolution.** (1) An `rpc`/`action` always has an `input` and an `output` schema node — synthesized empty when the source omits the block — so augments may target an implicit `input`/`output` (RFC 7950 §7.14/§7.15; regression: `ietf-ipv4/ipv6-unicast-routing` augments). (2) Module-level `augment`s are applied to a **fixpoint**: passes keep going until nothing new applies, so an augment may target a node that *another* augment installs regardless of upsert order (regression: `aug-chain-c` targeting `aug-chain-a`'s node — the real-world `ietf-ip-mounted`/`ietf-interfaces-mounted` case). Resolution thus depends only on the final schema, never on document order. |
 | D18 | **Instance-data queries.** Every node exposes its **instance module** — the module whose namespace owns it in an instance document; equal to `origin_module` except for nodes instantiated from a cross-module grouping via `uses`, where it is the *using* module (RFC 7950 §7.13). `ModuleRecord::data_children`/`data_child` give the instance-visible children through `choice`/`case` wrappers (data path ≠ schema path); an `rpc`/`action`'s body is reached via `rpc_input`/`rpc_output` (always present). `Library::modules_by_namespace` maps an XML element namespace to modules (several may share one); `Library::schema_nodeid` renders the canonical wrapper-inclusive absolute nodeid, segments prefixed by their instance module. Backs the sibling netconf-language-server's instance mapping (its D29/D30). |
 | D19 | **Leaf value typing + semantic `identityref`.** The compiler captures a `type` statement's facets on the leaf **and** each typedef (`TypeFacets`); `Library::value_type` reduces a leaf/leaf-list type through the typedef chain to a scalar `ValueType`, accumulating `length`/`pattern`/`range`, `enum`/`bit` members (most-derived wins), `leafref` `path`, and the `identityref` `base`. `union` is classified but never *checked* (RFC 7950 §9.12). `Library::check_identityref` gives semantic membership (`IdentityStatus`). yrepo captures/exposes; *enforcement* is the consumer's (netconf-language-server D31). |
+| D20 | **Optional parallelism stays order-transparent.** Parsing and the per-module compile phases are embarrassingly parallel, so they run under rayon behind the `parallel` cargo feature (default off, so the published crate's dependency tree stays lean): `Repository::upsert_many_files` reads and parses a whole batch of files off-thread (one file in memory at a time), and `compile` runs symbol scan / effective-tree expansion / the light validation passes per module in parallel — but only where each unit is independent (no shared mutable state). Cross-module work (submodule folding, the augment/deviation fixpoint) stays sequential. All parallel maps preserve input (document/module) order and per-module diagnostics are re-appended in that same order, so the `Library` and its diagnostics are identical to the sequential pipeline (regression: `tests/015_parallel.rs::files_batch_matches_sequential_semantics`). No explicit queue or lock is introduced: each rayon task builds its own tree-sitter `Parser` (a `Parser` is not shareable, while tree-sitter `Tree`/`Parser`/`Node` are `Send + Sync`, verified against 0.26.x), rayon's work-stealing deque schedules the tasks, and ordered `collect` restores order. Determinism is preserved by discipline rather than by an ordered map: every `HashMap` in the crate is lookup-only — none is iterated to produce public output — and symbol lists are sorted at the `ModuleRecord` boundary, so no `IndexMap` dependency was needed (D20 rationale for "HashMap is unordered": true but irrelevant here). |
 
 The audit decisions referenced by code comments and tests (`A2`, `A5`, `A6`)
 are recorded here under their original labels so those references stay valid:

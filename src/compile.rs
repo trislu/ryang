@@ -103,6 +103,57 @@ struct Scope<'a> {
 
 type GroupKey = (Arc<str>, String);
 
+/// Map over a slice, **preserving input order**, running in parallel when the
+/// `parallel` cargo feature is on (a plain sequential map otherwise).
+///
+/// Both paths return results in the same order, so callers never observe
+/// thread scheduling: downstream `records`/module ordering and diagnostics are
+/// identical either way. The parallel path additionally needs the element /
+/// closure / result to be `Sync`/`Send`; the sequential path needs none of
+/// those bounds. `Repository::upsert_many_files` reuses this to read and parse
+/// its file batch in parallel.
+#[cfg(feature = "parallel")]
+pub(crate) fn map_par<T, R, F>(items: &[T], f: F) -> Vec<R>
+where
+    T: Sync,
+    F: Fn(&T) -> R + Sync + Send,
+    R: Send,
+{
+    use rayon::prelude::*;
+    items.par_iter().map(f).collect()
+}
+
+/// Sequential fallback for [`map_par`] when the `parallel` feature is off.
+#[cfg(not(feature = "parallel"))]
+pub(crate) fn map_par<T, R, F>(items: &[T], f: F) -> Vec<R>
+where
+    F: Fn(&T) -> R,
+{
+    items.iter().map(f).collect()
+}
+
+/// Run two closures, concurrently when the `parallel` feature is on.
+#[cfg(feature = "parallel")]
+fn join_par<A, B, FA, FB>(fa: FA, fb: FB) -> (A, B)
+where
+    FA: FnOnce() -> A + Send,
+    FB: FnOnce() -> B + Send,
+    A: Send,
+    B: Send,
+{
+    rayon::join(fa, fb)
+}
+
+/// Sequential fallback for [`join_par`].
+#[cfg(not(feature = "parallel"))]
+fn join_par<A, B, FA, FB>(fa: FA, fb: FB) -> (A, B)
+where
+    FA: FnOnce() -> A,
+    FB: FnOnce() -> B,
+{
+    (fa(), fb())
+}
+
 // ---------------------------------------------------------------------------
 // Public entry
 // ---------------------------------------------------------------------------
@@ -307,11 +358,21 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         prefix_maps: HashMap::new(),
         module_index: HashMap::new(),
     };
+    // `module_index` (name -> position in `to_compile` = future `records`
+    // index) is filled up front: augment/deviation resolution consults it only
+    // after every record exists, and `records` is built in `to_compile` order.
+    for (i, m) in to_compile.iter().enumerate() {
+        index.module_index.insert(m.name.clone().unwrap(), i);
+    }
 
-    for m in &to_compile {
+    // Symbol/prefix scan is independent per module — run in parallel when the
+    // `parallel` feature is on. `map_par` preserves module order, so the
+    // resulting tables and downstream diagnostics are unchanged.
+    let scanned = map_par(&to_compile, |m| {
         let name = m.name.clone().unwrap();
-        let mut content: Vec<&Yang> = vec![m];
-        content.extend(content_of.get(&name).cloned().unwrap_or_default());
+        let content: Vec<&Yang> = std::iter::once(*m)
+            .chain(content_of.get(&name).cloned().unwrap_or_default())
+            .collect();
 
         // prefix map: own + belongs-to prefixes -> self; imports -> module
         let mut pmap: HashMap<String, Arc<str>> = HashMap::new();
@@ -323,7 +384,6 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
                 pmap.insert(imp.prefix.clone(), Arc::from(imp.module.as_str()));
             }
         }
-        index.prefix_maps.insert(name.clone(), pmap);
 
         // symbols
         let mut syms = SymTab {
@@ -338,18 +398,33 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
                 collect_symbols(root, doc, &name, &mut syms);
             }
         }
+        (name, pmap, syms)
+    });
+    for (name, pmap, syms) in scanned {
+        index.prefix_maps.insert(name.clone(), pmap);
         index.syms.insert(name, syms);
     }
 
     // ---- 4+5. expand + apply augment/deviation --------------------------
-    let mut records: Vec<ModuleRecord> = Vec::new();
-    for m in &to_compile {
+    // Effective-tree expansion reads only `index`/`content_of` and is
+    // independent per module — parallelized when the `parallel` feature is on,
+    // with per-module diagnostics collected in module order so `records` and
+    // diagnostics keep their existing ordering. The cross-module augment /
+    // deviation fixpoint below stays sequential: it mutates the shared
+    // `records` and one augment may target another augment's node (D17).
+    let built = map_par(&to_compile, |m| {
         let name = m.name.clone().unwrap();
-        index.module_index.insert(name.clone(), records.len());
         let content: Vec<&Yang> = std::iter::once(*m)
             .chain(content_of.get(&name).cloned().unwrap_or_default())
             .collect();
-        records.push(build_module(&index, &content, &name, &mut diags));
+        let mut local = Vec::new();
+        let rec = build_module(&index, &content, &name, &mut local);
+        (rec, local)
+    });
+    let mut records: Vec<ModuleRecord> = Vec::with_capacity(built.len());
+    for (rec, mut local) in built {
+        diags.append(&mut local);
+        records.push(rec);
     }
 
     // Apply module-level augments after every base tree exists.
@@ -379,8 +454,13 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     apply_deviations(&index, &mut records, &pending_devs, &mut diags);
 
     // ---- 6. light validation -------------------------------------------
-    validate_lists(&records, &mut diags);
-    validate_symbols(&records, &mut diags);
+    // Both passes read the finished `records` and only report; run them
+    // concurrently when the `parallel` feature is on and append in the
+    // original order (lists first, then symbols) so diagnostics are unchanged.
+    let (list_diags, sym_diags) =
+        join_par(|| validate_lists(&records), || validate_symbols(&records));
+    diags.extend(list_diags);
+    diags.extend(sym_diags);
 
     // ---- submodule records ---------------------------------------------
     let mut submodules = Vec::new();
@@ -1474,7 +1554,8 @@ fn symbol_local(text: &str) -> &str {
 
 /// Existence diagnostics for identity derivation and typedef chains
 /// (no RFC 7950 restriction-subset semantics).
-fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
+fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
     let by_name: HashMap<&str, usize> = records
         .iter()
         .enumerate()
@@ -1496,7 +1577,7 @@ fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
                         fb,
                         DiagnosticCode::UnresolvedPrefix,
                         format!("typedef '{}': unknown prefix in base '{base}'", t.name),
-                        diags,
+                        &mut diags,
                     ),
                     Resolve::Module(m) => {
                         let found = by_name.get(m.as_str()).map(|&i| {
@@ -1515,7 +1596,7 @@ fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
                                     t.name,
                                     symbol_local(base)
                                 ),
-                                diags,
+                                &mut diags,
                             );
                         }
                     }
@@ -1536,7 +1617,7 @@ fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
                         fb,
                         DiagnosticCode::UnresolvedPrefix,
                         format!("identity '{}': unknown prefix in base '{base}'", id.name),
-                        diags,
+                        &mut diags,
                     ),
                     Resolve::Module(m) => {
                         let found = by_name.get(m.as_str()).map(|&i| {
@@ -1555,7 +1636,7 @@ fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
                                     id.name,
                                     symbol_local(base)
                                 ),
-                                diags,
+                                &mut diags,
                             );
                         }
                     }
@@ -1592,13 +1673,14 @@ fn validate_symbols(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
                             &n.defining,
                             DiagnosticCode::UnresolvedTypedef,
                             format!("type '{t}' is not a builtin and no such typedef is in scope"),
-                            diags,
+                            &mut diags,
                         );
                     }
                 }
             }
         }
     }
+    diags
 }
 
 /// `/a/b/c` schema path of `id`, for readable diagnostics.
@@ -1689,7 +1771,8 @@ fn keyless_list_exempt(nodes: &[SchemaNode], list_id: NodeId) -> bool {
     }
 }
 
-fn validate_lists(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
+fn validate_lists(records: &[ModuleRecord]) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
     for rec in records {
         let lists: Vec<(NodeId, Vec<String>, Location, String, String)> = rec
             .nodes
@@ -1753,6 +1836,7 @@ fn validate_lists(records: &[ModuleRecord], diags: &mut Vec<Diagnostic>) {
             }
         }
     }
+    diags
 }
 
 // ---------------------------------------------------------------------------
