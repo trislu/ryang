@@ -290,28 +290,44 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
         }
     }
 
-    // Deduplicate modules with the same (name, revision).
-    let mut seen: HashMap<(String, Option<String>), ()> = HashMap::new();
-    let mut to_compile: Vec<&Yang> = Vec::new();
-    for y in &module_docs {
+    // Deduplicate modules with the same (name, revision). Among equal copies
+    // prefer one that parsed cleanly: a broken copy (whole-file parse
+    // failure) must not shadow a healthy copy and drag down every module
+    // that imports the name. Dropped copies are reported as warnings —
+    // visible but non-blocking (like pyang, which dedupes silently).
+    let mut best: HashMap<(String, Option<String>), usize> = HashMap::new();
+    for (i, y) in module_docs.iter().enumerate() {
         let key = (y.name.clone().unwrap(), y.revision.clone());
-        if seen.insert(key.clone(), ()).is_some() {
-            // Visible but non-blocking (like pyang, which silently dedupes):
-            // a second copy of the same (name, revision) is skipped and the
-            // user is told, without turning the workspace red.
+        let mut warn_drop = |dropped: &Yang| {
             diags.push(Diagnostic::warning(
-                Some(y.url.clone()),
-                root_range(y),
+                Some(dropped.url.clone()),
+                root_range(dropped),
                 DiagnosticCode::DuplicateModule,
                 format!(
                     "duplicate module '{}' (same name and revision); this copy is ignored",
                     key.0
                 ),
             ));
-            continue;
+        };
+        match best.get(&key) {
+            None => {
+                best.insert(key, i);
+            }
+            Some(&j) => {
+                let keep = module_docs[j];
+                if !keep.parse_errors.is_empty() && y.parse_errors.is_empty() {
+                    warn_drop(keep);
+                    best.insert(key, i);
+                } else {
+                    warn_drop(y);
+                }
+            }
         }
-        to_compile.push(y);
     }
+    let mut chosen: Vec<&Yang> = best.values().map(|&i| module_docs[i]).collect();
+    // Deterministic order (urls are unique), preserving ingest independence.
+    chosen.sort_by(|a, b| a.url.cmp(&b.url));
+    let to_compile = chosen;
 
     let mut sub_by_name: HashMap<&str, Vec<&Yang>> = HashMap::new();
     for s in &sub_docs {
