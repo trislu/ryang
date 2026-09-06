@@ -1749,6 +1749,20 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                 }
                 let at = t.base_loc.as_ref();
                 let fb = &t.defining;
+                // Unprefixed: the base names a typedef of THIS instance only
+                // (RFC 7950 §9.2.4) — never another revision of the same name.
+                if !base.contains(':') {
+                    if !rec.typedefs.iter().any(|x| x.name == *base) {
+                        push_symbol_err(
+                            at,
+                            fb,
+                            DiagnosticCode::UnresolvedTypedef,
+                            format!("typedef '{}' is based on unknown type '{}'", t.name, base),
+                            &mut diags,
+                        );
+                    }
+                    continue;
+                }
                 match resolve_symbol_module(rec, base) {
                     Resolve::PrefixUnknown => push_symbol_err(
                         at,
@@ -1758,7 +1772,8 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                         &mut diags,
                     ),
                     Resolve::Module(m) => {
-                        let found = by_name.get(m.as_str()).map(|&i| {
+                        let pfx = base.split(':').next().unwrap_or(base);
+                        let found = pick(rec, m.as_str(), pfx).map(|i| {
                             records[i]
                                 .typedefs
                                 .iter()
@@ -1789,6 +1804,22 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
             if let Some(base) = &id.base {
                 let at = id.base_loc.as_ref();
                 let fb = &id.defining;
+                // Unprefixed: the base names an identity of THIS instance only.
+                if !base.contains(':') {
+                    if !rec.identities.iter().any(|x| x.name == *base) {
+                        push_symbol_err(
+                            at,
+                            fb,
+                            DiagnosticCode::UnresolvedIdentity,
+                            format!(
+                                "identity '{}' is based on unknown identity '{}'",
+                                id.name, base
+                            ),
+                            &mut diags,
+                        );
+                    }
+                    continue;
+                }
                 match resolve_symbol_module(rec, base) {
                     Resolve::PrefixUnknown => push_symbol_err(
                         at,
