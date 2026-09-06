@@ -669,6 +669,26 @@ impl Library {
         }
         out
     }
+
+    /// Grouping names available for a `uses` argument: the module's own
+    /// groupings (bare) plus imported modules' groupings as `prefix:name`.
+    pub fn grouping_candidates(&self, module: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(rec) = self.module(module) else {
+            return out;
+        };
+        for g in rec.groupings() {
+            out.push(g.name.clone());
+        }
+        for imp in &rec.imports {
+            if let Some(irec) = self.module(&imp.module) {
+                for g in irec.groupings() {
+                    out.push(format!("{}:{}", imp.prefix, g.name));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
