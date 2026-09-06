@@ -23,6 +23,12 @@ target/release/examples/inspect <dir>          # whole-tree diagnostic histogram
 target/release/examples/probe <file…>          # per-file diagnostics + context
 target/release/examples/perf [--repeat N] [--csv f.csv] <dir…>  # time + CPU + RSS
 ```
+`examples/memstep.rs` is the stepwise NON-parallel memory probe: upserts one
+file at a time, logs RSS/VmHWM every `--log-every` files with optional
+`--sleep-ms` waterline observation and periodic `--compile-every` compiles,
+`--start-at`/`--stop-at` bounds, logs also appended to `$MEMSTEP_LOG` (durable
+"last words" when probing the memory edge). Build without `--features
+parallel` for a single-threaded ingest path.
 
 ## Bench baseline
 
