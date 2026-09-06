@@ -262,6 +262,10 @@ fn starts_with_angle(y: &Yang) -> bool {
     src.chars().find(|c| !c.is_whitespace()) == Some('<')
 }
 
+/// Explicit phase table (pyang-mirrored, YREPO_PHASES ③):
+/// 1 classify -> 2 dedupe + attach submodules -> 3 symbol scan (per instance)
+/// -> 4/5 expand effective trees + augment/deviation fixpoint ->
+/// 6 validation phase ([`validation_phase`]) -> submodule records.
 pub fn build(docs: &[&Yang]) -> BuildOutcome {
     let mut diags = Vec::new();
 
@@ -555,16 +559,10 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     apply_augments(&index, &mut records, &pending_augs, &mut diags);
     apply_deviations(&index, &mut records, &pending_devs, &mut diags);
 
-    // ---- 6. light validation -------------------------------------------
-    // Both passes read the finished `records` and only report; run them
-    // concurrently when the `parallel` feature is on and append in the
-    // original order (lists first, then symbols) so diagnostics are unchanged.
-    let (list_diags, sym_diags) =
-        join_par(|| validate_lists(&records), || validate_symbols(&records));
-    diags.extend(list_diags);
-    diags.extend(sym_diags);
-    diags.extend(validate_duplicate_nodes(&records));
-    diags.extend(validate_leafref_paths(&records));
+    // ---- 6. validation phase (③) ---------------------------------------
+    // All post-expansion reference/structure checks run here as one explicit
+    // phase over the finished `records`; diagnostics keep a fixed order.
+    diags.extend(validation_phase(&records));
 
     // ---- submodule records ---------------------------------------------
     let mut submodules = Vec::new();
@@ -2320,6 +2318,20 @@ fn validate_duplicate_nodes(records: &[ModuleRecord]) -> Vec<Diagnostic> {
         }
     }
     diags
+}
+
+/// The validation PHASE (YREPO_PHASES ③): runs over the finished effective
+/// trees and reports only. Order is deterministic: list checks and symbol
+/// checks run concurrently when the `parallel` feature is on (appended in
+/// that fixed order), then same-file duplicate-node and absolute leafref-path
+/// checks.
+fn validation_phase(records: &[ModuleRecord]) -> Vec<Diagnostic> {
+    let (mut list_diags, mut sym_diags) =
+        join_par(|| validate_lists(records), || validate_symbols(records));
+    list_diags.append(&mut sym_diags);
+    list_diags.extend(validate_duplicate_nodes(records));
+    list_diags.extend(validate_leafref_paths(records));
+    list_diags
 }
 
 fn validate_lists(records: &[ModuleRecord]) -> Vec<Diagnostic> {
