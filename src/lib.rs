@@ -26,6 +26,7 @@
 
 mod compile;
 mod diag;
+mod grouping_topo;
 mod library;
 mod schema;
 mod syntax;
