@@ -82,6 +82,8 @@ struct SymTab<'a> {
 struct Index<'a> {
     /// Per module-instance symbol tables, keyed by instance url.
     syms: HashMap<String, SymTab<'a>>,
+    /// prefix -> module name, per module INSTANCE url.
+    pmaps_by_url: HashMap<String, HashMap<String, Arc<str>>>,
     /// prefix -> module name, per module name (canonical instance).
     prefix_maps: HashMap<String, HashMap<String, Arc<str>>>,
     /// module name -> index into `records` (canonical: highest revision).
@@ -396,6 +398,7 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     // ---- 3. symbol scan -------------------------------------------------
     let mut index = Index {
         syms: HashMap::new(),
+        pmaps_by_url: HashMap::new(),
         prefix_maps: HashMap::new(),
         module_index: HashMap::new(),
         canon: HashMap::new(),
@@ -464,20 +467,23 @@ pub fn build(docs: &[&Yang]) -> BuildOutcome {
     // name keeps its own symbols. `prefix_maps` keeps ONE canonical instance
     // per name — the one with the highest revision — because all name-based
     // reference resolution below is canonical-latest.
-    let mut pmaps: HashMap<String, (String, String, HashMap<String, Arc<str>>)> = HashMap::new();
+    let mut canon: HashMap<String, (String, String)> = HashMap::new(); // name -> (rev, url)
     for (url, name, rev, pmap, syms) in scanned {
         index.syms.insert(url.clone(), syms);
-        let better = match pmaps.get(&name) {
+        index.pmaps_by_url.insert(url.clone(), pmap);
+        let better = match canon.get(&name) {
             None => true,
-            Some((cur, _, _)) => rev > *cur,
+            Some((cur, _)) => rev > *cur,
         };
         if better {
-            pmaps.insert(name, (rev, url, pmap));
+            canon.insert(name, (rev, url));
         }
     }
-    for (name, (_rev, url, pmap)) in pmaps {
-        index.canon.insert(name.clone(), url);
-        index.prefix_maps.insert(name, pmap);
+    for (name, (_rev, url)) in canon {
+        index.canon.insert(name.clone(), url.clone());
+        index
+            .prefix_maps
+            .insert(name, index.pmaps_by_url[&url].clone());
     }
 
     // ---- 4+5. expand + apply augment/deviation --------------------------
@@ -907,8 +913,8 @@ fn build_module(
         imports: Vec::new(),
         includes: Vec::new(),
         prefix_map: index
-            .prefix_maps
-            .get(name)
+            .pmaps_by_url
+            .get(m.url.as_ref())
             .map(|pm| pm.iter().map(|(k, v)| (k.clone(), v.to_string())).collect())
             .unwrap_or_default(),
         nodes: arena,
