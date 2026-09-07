@@ -105,21 +105,36 @@ impl CatalogIndex {
     /// (a plain sequential loop otherwise), and each worker keeps only its
     /// in-flight file, so scan memory stays flat however large the tree.
     /// Url of an entry is its path string (callers that need canonical file
-    /// urls convert before passing paths). Returns how many files were
-    /// cataloged (unreadable files are skipped, never an error).
+    /// urls use [`CatalogIndex::scan_many_files_with`]). Returns how many
+    /// files were cataloged (unreadable files are skipped, never an error).
     pub fn scan_many_files<I, P>(&mut self, paths: I) -> usize
     where
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
+    {
+        self.scan_many_files_with(paths, |p| Some(p.to_string_lossy().to_string()))
+    }
+
+    /// Like [`CatalogIndex::scan_many_files`], but the entry url for each file
+    /// comes from `url_for` (e.g. canonical `file://` urls matching a
+    /// language server's document keys instead of the raw path string). The
+    /// mapping runs inside the same parallel workers as the read+scan.
+    /// Returns how many files were cataloged.
+    pub fn scan_many_files_with<I, P, F>(&mut self, paths: I, url_for: F) -> usize
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+        F: Fn(&Path) -> Option<String> + Send + Sync,
     {
         let paths: Vec<PathBuf> = paths
             .into_iter()
             .map(|p| p.as_ref().to_path_buf())
             .collect();
         let scanned: Vec<Option<Catalog>> = crate::compile::map_par(&paths, |p| {
+            let url = url_for(p)?;
             std::fs::read_to_string(p)
                 .ok()
-                .map(|text| Catalog::scan(p.to_string_lossy().to_string(), text))
+                .map(|text| Catalog::scan(url, text))
         });
         let mut n = 0usize;
         for record in scanned.into_iter().flatten() {
@@ -396,6 +411,42 @@ mod tests {
         assert_eq!(n, 3);
         assert!(index.canonical("m1").is_some());
         assert!(index.of_url(&files[0].to_string_lossy()).is_some());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_many_files_with_applies_the_url_mapping() {
+        use std::fs;
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!(
+            "yrepo-catalog-scan-with-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (0..3)
+            .map(|i| {
+                let p = dir.join(format!("w{i}.yang"));
+                fs::write(
+                    &p,
+                    format!("module w{i} {{ namespace \"urn:w{i}\"; prefix w{i}; }}"),
+                )
+                .unwrap();
+                p
+            })
+            .collect();
+        let mut index = CatalogIndex::default();
+        let n = index.scan_many_files_with(&files, |p| Some(format!("file://{}", p.display())));
+        assert_eq!(n, 3);
+        assert!(
+            index
+                .of_url(&format!("file://{}", files[1].display()))
+                .is_some()
+        );
+        assert!(index.of_url(&files[1].to_string_lossy()).is_none());
         fs::remove_dir_all(&dir).ok();
     }
 }

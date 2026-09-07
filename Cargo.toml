@@ -18,7 +18,7 @@ name = "yrepo"
 
 [dependencies]
 tree-sitter = "0.26"
-tree-sitter-yang = "0.3"
+tree-sitter-yang = "0.4.0"
 rayon = { version = "1.10", optional = true }
 
 [features]
