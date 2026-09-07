@@ -203,7 +203,7 @@ fn fold_submodules<'a>(
             let detail = if sub_by_name.contains_key(inc.name.as_str()) {
                 "submodule belongs to a different module"
             } else {
-                "no such submodule document is open"
+                "no submodule with that name is found"
             };
             diags.push(Diagnostic::error(
                 Some(doc.url.clone()),
@@ -634,7 +634,7 @@ fn build_module(
                     Some(imp.range.clone()),
                     DiagnosticCode::UnresolvedImport,
                     format!(
-                        "module '{}' imports '{}' but it is not open",
+                        "module '{}' imports '{}' but that module is not found",
                         name, imp.module
                     ),
                 ));
@@ -1082,7 +1082,7 @@ fn expand_uses(
             Some(scope.file.url.clone()),
             Some(arg.range.clone()),
             DiagnosticCode::UnresolvedGrouping,
-            format!("grouping '{local}' is (transitively) recursive"),
+            format!("recursive use of grouping '{local}'"),
         ));
         return Vec::new();
     }
@@ -1416,7 +1416,7 @@ fn attach_submodules_phase<'a>(
                 range,
                 DiagnosticCode::UnresolvedBelongsTo,
                 format!(
-                    "submodule '{}' belongs-to '{}' but that module is not open",
+                    "submodule '{}' belongs-to '{}' but that module is not found",
                     s.name.clone().unwrap_or_default(),
                     parent.unwrap_or_default()
                 ),
@@ -2003,7 +2003,7 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                     None,
                     &n.defining,
                     DiagnosticCode::UnresolvedTypedef,
-                    format!("type '{t}' is not a builtin and no such typedef is in scope"),
+                    format!("type '{t}' is not a builtin type and no typedef with that name is in scope"),
                     diags,
                 );
             };
@@ -2429,7 +2429,7 @@ fn validate_lists(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                         Some(loc.url.clone()),
                         Some(loc.range.clone()),
                         DiagnosticCode::KeyLeafNotFound,
-                        format!("key leaf '{k}' is not a child of the list"),
+                        format!("key leaf '{k}' is not a child of list '{name}' (path '{path}')"),
                     )),
                     Some((_, kind, _)) => {
                         if *kind != NodeKind::Leaf {
