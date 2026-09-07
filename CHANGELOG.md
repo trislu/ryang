@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
 ### Added
 
 - **Catalog-only indexing for very large trees**:
@@ -22,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description/reference/organization/contact statements from the Statement
   tree and their quoted runs from the token stream. Schema resolution and LSP
   semantics are unaffected (tests `027_text_light.rs`); default OFF.
+
+### Changed
+
+- **Clearer diagnostic wording** (no API change): user-facing messages for
+  unresolved imports/includes/belongs-to, unknown leaf types, recursive
+  `uses`, and missing key leaves were reworded to drop internal "open"
+  vocabulary and to name the affected list where relevant. Machine-readable
+  `DiagnosticCode` values, severities, and codes are unchanged.
 
 ## [0.3.0] - 2026-09-06
 
