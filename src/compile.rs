@@ -2003,7 +2003,9 @@ fn validate_symbols(records: &[ModuleRecord]) -> Vec<Diagnostic> {
                     None,
                     &n.defining,
                     DiagnosticCode::UnresolvedTypedef,
-                    format!("type '{t}' is not a builtin type and no typedef with that name is in scope"),
+                    format!(
+                        "type '{t}' is not a builtin type and no typedef with that name is in scope"
+                    ),
                     diags,
                 );
             };

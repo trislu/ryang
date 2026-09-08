@@ -30,6 +30,7 @@ mod diag;
 mod fragment;
 mod grouping_topo;
 mod library;
+mod refidx;
 mod schema;
 mod syntax;
 mod text;
@@ -39,6 +40,7 @@ mod yang;
 pub use crate::catalog::{Catalog, CatalogImport, CatalogIndex, build_closure_repository};
 pub use crate::diag::{Diagnostic, DiagnosticCode, Location, Severity};
 pub use crate::library::{IdentityStatus, Library, Outcome};
+pub use crate::refidx::ReferenceIndex;
 pub use crate::schema::{
     AppliedAugment, AppliedDeviation, DeviationOp, ExtensionDef, FeatureDef, Grouping, Identity,
     IdentityRef, IdentityResolution, ImportInfo, ModuleRecord, NodeId, NodeKind, SchemaNode,

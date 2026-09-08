@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`yrepo::ReferenceIndex`**: whole-tree find-references without expanding the
+  open-closure data tree. `scan_many_files…` statement-walks a file batch once
+  (in parallel under the `parallel` feature) and retains only compact
+  definition/reference occurrences resolved to their target module;
+  `references(module, local, include_declaration)` returns every
+  `(url, byte-range)` hit across the indexed tree. Mirrors the editor-side
+  reference engine: `typedef`/`grouping`/`identity`/`feature`/`extension`
+  definitions (submodule symbols owned by the `belongs-to` parent),
+  `type`/`uses`/`base`/`if-feature` references, builtin `type` names skipped,
+  dangling-import targets dropped. Retains no statement trees or source text.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added

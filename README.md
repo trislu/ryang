@@ -109,6 +109,33 @@ assert_eq!(
 );
 ```
 
+## Whole-tree references (beyond the open closure)
+
+The serving model keeps full statement trees only for the *open closure*
+(the modules you have open plus their imports/includes), so references to a
+symbol defined in a library module (e.g. a typedef in `ietf-yang-types`) that
+other modules merely *import* are invisible through the closure. `ReferenceIndex`
+answers whole-tree references without expanding the data tree: it
+statement-walks a file batch once (like the catalog scan) and retains only
+compact definition/reference occurrences resolved to their target module.
+
+```rust
+use yrepo::ReferenceIndex;
+
+let mut ix = ReferenceIndex::default();
+ix.scan_many_files_with(&files, |p| Some(format!("file://{}", p.display())));
+// Every `type t:speed` / `typedef speed` across the tree that names
+// module "types", symbol "speed"; the declaration is included when true.
+for (url, range) in ix.references("types", "speed", true) { /* … */ }
+```
+
+Semantics mirror the editor-side reference engine: `typedef`/`grouping`/
+`identity`/`feature`/`extension` definitions (submodule symbols are owned by
+their `belongs-to` parent module), `type`/`uses`/`base`/`if-feature`
+references, builtin `type` names skipped, dangling-import targets dropped.
+The index is a whole-batch builder (`scan_many_files…` replaces prior
+contents); no statement trees or source text survive the scan.
+
 ## Notes
 
 - User-content problems (parse errors, unresolved imports, bad keys, …) are
@@ -148,6 +175,7 @@ src/
   compile.rs    # symbol scan, effective-tree expansion, augment/deviation
   schema.rs     # semantic model types (effective nodes, module records)
   library.rs    # Library + queries
+  refidx.rs     # whole-tree reference index (ReferenceIndex)
   value.rs      # leaf value typing: TypeFacets capture + ValueType
   diag.rs       # Diagnostic / Severity / DiagnosticCode
 tests/
