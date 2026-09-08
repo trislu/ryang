@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `openconfig-yang-types.yang`). No API change; parse output for previously
   valid modules is unchanged.
 
+### Fixed
+
+- **Token stream omitted quoted fragments of concatenated arguments**: the
+  grammar lexes the leading piece of a `namespace "…" + "…"`-style argument
+  as a hidden token, so `Repository::tokens` never surfaced it. `parse` now
+  recovers every quoted run and `+` concatenation operator inside statement
+  argument spans (`augment_quoted_fragments`), skipping fragments the CST walk
+  already produced. Full (non-light) documents only; text-light retention is
+  unchanged.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added

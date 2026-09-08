@@ -498,10 +498,16 @@ pub(crate) fn parse_opt(source: String, light: bool) -> ParsedDoc {
         Vec::new()
     };
     let mut tokens = collect_tokens(tree.root_node(), &text);
-    if light {
-        tokens.retain(|t| !excluded.iter().any(|r| r.contains(&t.range.start)));
-    }
     let root = find_top_module(tree.root_node()).map(|n| build_statement(n, &text, light));
+    if light {
+        // Text-light retention model: drop the prose-only quoted runs. Keep
+        // the fragment augmentation off too — nothing highlights light views.
+        tokens.retain(|t| !excluded.iter().any(|r| r.contains(&t.range.start)));
+    } else {
+        // Full documents: recover quoted fragments the CST-leaf walk missed
+        // (hidden-token pieces of concatenated arguments).
+        augment_quoted_fragments(&root, &text, &mut tokens);
+    }
     drop(tree);
     ParsedDoc {
         text,
@@ -864,6 +870,96 @@ fn collect_tokens_inner(node: Node, text: &Text, out: &mut Vec<Token>) {
     }
 }
 
+/// Merge a recovered quoted-run / `+`-operator token unless an identical range
+/// is already present (the leaf walk usually produced the trailing fragments
+/// of a concatenated argument; only the missing pieces are added).
+fn push_fragment(tokens: &mut Vec<Token>, kind: TokenKind, start: usize, end: usize, text: &Text) {
+    if start >= end {
+        return;
+    }
+    if tokens
+        .iter()
+        .any(|t| t.range.start == start && t.range.end == end)
+    {
+        return;
+    }
+    let raw = text.slice(start..end).to_string();
+    tokens.push(Token {
+        kind,
+        range: start..end,
+        text: raw,
+    });
+}
+
+/// Some quoted-string fragments are lexed by the grammar as *hidden* tokens
+/// that the CST-leaf walk above never sees (e.g. the leading fragment of a
+/// `namespace "…" + "…"` argument, whose first piece comes from a hidden
+/// `_uri_dq`-style token). Recover every quoted run and `+` concatenation
+/// operator inside each statement's argument span from the raw source text,
+/// skipping fragments the leaf walk already produced (identical ranges).
+/// Quoting follows RFC 7950 §6.1.3: single-quoted runs end at the next `'`;
+/// double-quoted runs honor backslash escapes; a `+` outside quotes is the
+/// concatenation operator.
+fn augment_quoted_fragments(root: &Option<Statement>, text: &Text, tokens: &mut Vec<Token>) {
+    let Some(root) = root else {
+        return;
+    };
+    for stmt in root.preorder() {
+        let Some(arg) = &stmt.arg else {
+            continue;
+        };
+        let raw = text.slice(arg.range.clone());
+        let mut i = 0usize;
+        while i < raw.len() {
+            let c = raw[i..].chars().next().unwrap();
+            let start = arg.range.start + i;
+            if c == '\'' || c == '"' {
+                let quote = c;
+                i += c.len_utf8();
+                let mut closed = None;
+                while i < raw.len() {
+                    let ch = raw[i..].chars().next().unwrap();
+                    if quote == '"' && ch == '\\' {
+                        // Escape: skip the escaped character.
+                        i += ch.len_utf8();
+                        if i < raw.len() {
+                            i += raw[i..].chars().next().unwrap().len_utf8();
+                        }
+                        continue;
+                    }
+                    i += ch.len_utf8();
+                    if ch == quote {
+                        closed = Some(i);
+                        break;
+                    }
+                }
+                let end = closed.unwrap_or(raw.len());
+                push_fragment(
+                    tokens,
+                    TokenKind::String,
+                    start,
+                    arg.range.start + end,
+                    text,
+                );
+                i = end;
+                continue;
+            }
+            if c == '+' {
+                i += c.len_utf8();
+                push_fragment(
+                    tokens,
+                    TokenKind::Operator,
+                    start,
+                    arg.range.start + i,
+                    text,
+                );
+                continue;
+            }
+            i += c.len_utf8();
+        }
+    }
+}
+
 /// Classify one CST leaf by its node kind (for anonymous leaves the kind *is*
 /// the literal text) with text fallbacks for numbers and quoted URI tokens.
 fn classify_token(kind: &str, text: &str) -> TokenKind {
@@ -939,7 +1035,7 @@ impl TokenSpot {
 
 #[cfg(test)]
 mod tests {
-    use super::logical_argument;
+    use super::{TokenKind, logical_argument, parse};
 
     #[test]
     fn logical_argument_unquoted_identifier() {
@@ -958,6 +1054,33 @@ mod tests {
     fn logical_argument_joins_concatenated_fragments() {
         assert_eq!(logical_argument("\"/a:b\" + \"/c:d\""), "/a:b/c:d");
         assert_eq!(logical_argument("\"abc\"+\"def\""), "abcdef");
+    }
+
+    #[test]
+    fn tokens_include_every_concatenated_quoted_fragment() {
+        // The grammar lexes the *leading* fragment of a concatenated quoted
+        // argument as a hidden token (namespace's first URI piece), so the
+        // CST-leaf walk alone misses it. parse() must still surface each
+        // quoted run as a String and the `+` as an Operator (regression).
+        let p = parse("module n { namespace \"urn:base/\" + \"urn:more\"; }\n".to_string());
+        let text: Vec<String> = p
+            .tokens
+            .iter()
+            .filter(|t| matches!(t.kind, TokenKind::String | TokenKind::Operator))
+            .map(|t| t.text.clone())
+            .collect();
+        assert!(
+            text.iter().any(|t| t == "\"urn:base/\""),
+            "leading fragment missing: {text:?}"
+        );
+        assert!(
+            text.iter().any(|t| t == "\"urn:more\""),
+            "trailing fragment missing: {text:?}"
+        );
+        assert!(
+            text.iter().any(|t| t == "+"),
+            "concatenation operator missing: {text:?}"
+        );
     }
 
     #[test]
