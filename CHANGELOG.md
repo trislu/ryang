@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `type`/`uses`/`base`/`if-feature` references, builtin `type` names skipped,
   dangling-import targets dropped. Retains no statement trees or source text.
 
+### Changed
+
+- **Bundled grammar: `tree-sitter-yang` 0.4.1** — a `type string { … }` block
+  with a vendor extension statement interspersed between `pattern`/`length`
+  members no longer collapses the whole module (e.g. OpenConfig's
+  `openconfig-yang-types.yang`). No API change; parse output for previously
+  valid modules is unchanged.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added
